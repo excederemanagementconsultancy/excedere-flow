@@ -1,0 +1,1 @@
+{"name":"excedere-flow","version":"1.0.0","private":true,"type":"module","description":"A simple, local-first business workspace","scripts":{"test":"node --test tests/*.test.js","start":"python3 -m http.server 4173 --bind 127.0.0.1"},"engines":{"node":">=20"}}
