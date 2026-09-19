@@ -1,4 +1,5 @@
 import { sourceTables } from './seed-data.js';
+import {safeLink} from './task-guides.js';
 export const SCHEMA_VERSION = 1;
 export const TASK_STATUSES = ['Not Started', 'In Progress', 'Completed'];
 export const IDEA_STATUSES = ['Idea', 'Draft', 'Scheduled', 'Used'];
@@ -58,6 +59,10 @@ export function projectProgress(state, project, date) {
   const linked = [...rows,...allSingles];
   return linked.length ? {...progress(linked), linked:true} : {percent:project.progress,linked:false};
 }
+function validateExtras(r) {
+  if(r.checklist!==undefined && (!Array.isArray(r.checklist)||r.checklist.length>100||new Set(r.checklist.map(s=>s?.id)).size!==r.checklist.length||r.checklist.some(s=>!s||!str(s.id,100)||!str(s.label,500)||!s.label.trim()||typeof s.done!=='boolean'))) throw Error('Invalid checklist.');
+  if(r.linkIds!==undefined && (!Array.isArray(r.linkIds)||r.linkIds.length>100||r.linkIds.some(id=>!str(id,100)))) throw Error('Invalid task links.');
+}
 const validDate = s => typeof s==='string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s)) && new Date(s+'T12:00:00Z').toISOString().slice(0,10)===s;
 const str = (s,max=10000) => typeof s==='string' && s.length<=max;
 export function validate(data) {
@@ -69,7 +74,7 @@ export function validate(data) {
     const ids = new Set();
     for(const r of data[kind]) {
       if(!r||!str(r.id,100)||!/^[a-zA-Z0-9-]+$/.test(r.id)||ids.has(r.id)||r.workspaceId!==data.workspace.id||!str(r.title,300)||!r.title.trim()||!str(r.area,100)||!str(r.notes)||!PRIORITIES.includes(r.priority)) throw Error('A record contains invalid fields.');
-      ids.add(r.id);
+      ids.add(r.id); validateExtras(r);
       const statuses = kind==='tasks'?TASK_STATUSES:kind==='ideas'?IDEA_STATUSES:PROJECT_STATUSES;
       if(!statuses.includes(r.status)) throw Error('A record has an invalid status.');
       if(kind==='tasks' && ((!validDate(r.date)&&r.date!=='') || (r.recurring&&!validDate(r.date)) || typeof r.recurring!=='boolean' || !/^$|^([01]\d|2[0-3]):[0-5]\d$/.test(r.time)||!str(r.projectId,100))) throw Error('A task has an invalid schedule.');
@@ -80,10 +85,12 @@ export function validate(data) {
     const [id,date] = key.split('@');
     const base = data.tasks.find(t=>t.id===id && t.recurring);
     if(!base||!validDate(date)||date<base.date||(Date.parse(date)-Date.parse(base.date))/86400000%7!==0||!patch||typeof patch!=='object'||Array.isArray(patch)) throw Error('Invalid recurring occurrence.');
-    const allowed=['title','area','priority','status','date','time','notes','projectId','deleted'];
+    validateExtras(patch);
+    const allowed=['title','area','priority','status','date','time','notes','projectId','deleted','checklist','linkIds'];
     if(Object.keys(patch).some(k=>!allowed.includes(k))) throw Error('Unsupported recurring fields.');
     if(patch.deleted!==undefined&&typeof patch.deleted!=='boolean') throw Error('Invalid recurrence deletion.');
     if(patch.title!==undefined&&(!str(patch.title,300)||!patch.title.trim())||patch.notes!==undefined&&!str(patch.notes)||patch.area!==undefined&&!str(patch.area,100)||patch.projectId!==undefined&&!str(patch.projectId,100)||patch.status!==undefined&&!TASK_STATUSES.includes(patch.status)||patch.priority!==undefined&&!PRIORITIES.includes(patch.priority)||patch.date!==undefined&&!validDate(patch.date)||patch.time!==undefined&&!/^$|^([01]\d|2[0-3]):[0-5]\d$/.test(patch.time)) throw Error('Invalid recurring fields.');
   }
+  if(data.links!==undefined && (!Array.isArray(data.links)||data.links.length>100||new Set(data.links.map(l=>l?.id)).size!==data.links.length||data.links.some(l=>!l||!str(l.id,100)||!str(l.label,100)||!l.label.trim()||!safeLink(l.url)))) throw Error('Use a valid HTTPS address for each useful link.');
   return data;
 }
