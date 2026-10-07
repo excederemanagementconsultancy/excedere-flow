@@ -1,363 +1,183 @@
-import {
-  today,
-  addDays,
-  weekStart,
-  occurrences,
-  progress,
-  projectProgress,
-  updateOccurrence,
-  removeTask,
-  uid,
-  validate,
-  TASK_STATUSES,
-  IDEA_STATUSES,
-  PROJECT_STATUSES,
-  PRIORITIES
-} from './model.js';
+import {today,addDays,weekStart,occurrences,progress,projectProgress,updateOccurrence,removeTask,uid,validate,TASK_STATUSES,IDEA_STATUSES,PROJECT_STATUSES,PRIORITIES} from './model.js';
+import {accountsEnabled,startAccount,logout} from './accounts.js';
+import {LocalRepository,STORAGE_KEY} from './storage.js';
+import {upgradeGuides,safeLink} from './task-guides.js';
+import {loadProjectsFeed,setProjectsTaskCompleted} from './projects-feed.js';
 
-import {
-  accountsEnabled,
-  startAccount,
-  logout
-} from './accounts.js';
+const $=s=>document.querySelector(s);
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const icons={Dashboard:'<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',Schedule:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18"/>',Ideas:'<path d="M9 18h6m-5 3h4M8 14a7 7 0 1 1 8 0c-1 1-1 2-1 2H9s0-1-1-2Z"/>',Projects:'<path d="M3 7V5a2 2 0 0 1 2-2h5l3 4h6a2 2 0 0 1 2 2v10H3Z"/>',Settings:'<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="16" cy="17" r="3"/>'};
+const icon=k=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">${icons[k]||''}</svg>`;
 
-import {
-  LocalRepository,
-  STORAGE_KEY
-} from './storage.js';
+let repo,state,view=location.hash.slice(1)||'Dashboard',offset=0,area='',status='',search='',rows=new Map(),editorRevision=0,revision=0,saving=false;
+let projectsFeed={tasks:[],version:0,updatedAt:null},projectsFeedLoading=false;
+const projectsSaving=new Set();
 
-import {
-  upgradeGuides,
-  safeLink
-} from './task-guides.js';
+const date=()=>today(state.workspace.timeZone);
+const pretty=(d,short=false)=>d?new Intl.DateTimeFormat('en-GB',{day:'numeric',month:'short',...(short?{}:{weekday:'short'}),timeZone:'UTC'}).format(new Date(d+'T12:00:00Z')):'Unscheduled';
 
-import {
-  loadProjectsFeed
-} from './projects-feed.js';
-
-
-const $ = s =>
-  document.querySelector(s);
-
-const esc = v =>
-  String(v ?? '').replace(
-    /[&<>"']/g,
-    c => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;'
-    }[c])
-  );
-
-
-const icons = {
-  Dashboard:
-    '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
-
-  Schedule:
-    '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18"/>',
-
-  Ideas:
-    '<path d="M9 18h6m-5 3h4M8 14a7 7 0 1 1 8 0c-1 1-1 2-1 2H9s0-1-1-2Z"/>',
-
-  Projects:
-    '<path d="M3 7V5a2 2 0 0 1 2-2h5l3 4h6a2 2 0 0 1 2 2v10H3Z"/>',
-
-  Settings:
-    '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="16" cy="17" r="3"/>'
-};
-
-
-const icon = k =>
-  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">${icons[k] || ''}</svg>`;
-
-
-let repo;
-let state;
-
-let view =
-  location.hash.slice(1) ||
-  'Dashboard';
-
-let offset = 0;
-let area = '';
-let status = '';
-let search = '';
-
-let rows = new Map();
-
-let editorRevision = 0;
-let revision = 0;
-
-let saving = false;
-
-let projectsFeed = {
-  tasks: [],
-  version: 0,
-  updatedAt: null
-};
-
-let projectsFeedLoading = false;
-
-
-const date = () =>
-  today(
-    state.workspace.timeZone
-  );
-
-
-const pretty = (
-  d,
-  short = false
-) =>
-  d
-    ? new Intl.DateTimeFormat(
-        'en-GB',
-        {
-          day: 'numeric',
-          month: 'short',
-          ...(
-            short
-              ? {}
-              : {
-                  weekday:
-                    'short'
-                }
-          ),
-          timeZone: 'UTC'
-        }
-      ).format(
-        new Date(
-          d +
-          'T12:00:00Z'
-        )
-      )
-    : 'Unscheduled';
-
-
-function toast(message) {
-  const target = $('#toast');
-
-  if (!target) {
-    return;
-  }
-
-  target.textContent =
-    message;
-
-  target.classList.add(
-    'show'
-  );
-
-  clearTimeout(
-    toast.timer
-  );
-
-  toast.timer =
-    setTimeout(
-      () =>
-        target.classList.remove(
-          'show'
-        ),
-      4500
-    );
+function toast(message){
+  const target=$('#toast');
+  if(!target)return;
+  target.textContent=message;
+  target.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer=setTimeout(()=>target.classList.remove('show'),4500);
 }
 
-
-async function mutate(
-  fn,
-  message = 'Saved'
-) {
-  if (saving) {
-    toast(
-      'Please wait for the current save.'
-    );
-
+async function mutate(fn,message='Saved'){
+  if(saving){
+    toast('Please wait for the current save.');
     return false;
   }
 
-  if (!state) {
-    return false;
-  }
+  if(!state)return false;
 
-  saving = true;
+  saving=true;
+  const savingRepo=repo;
 
-  const savingRepo =
-    repo;
-
-  try {
-    const next =
-      structuredClone(
-        state
-      );
-
+  try{
+    const next=structuredClone(state);
     fn(next);
 
-    await repo.save(
-      next
-    );
+    await repo.save(next);
 
-    if (
-      repo !== savingRepo
-    ) {
-      return false;
-    }
+    if(repo!==savingRepo)return false;
 
-    state = next;
+    state=next;
     revision++;
-
     render();
     toast(message);
 
     return true;
 
-  } catch (e) {
-    toast(
-      'Could not save. ' +
-      e.message
-    );
-
+  }catch(e){
+    toast('Could not save. '+e.message);
     return false;
 
-  } finally {
-    saving = false;
+  }finally{
+    saving=false;
   }
 }
 
+async function refreshProjectsFeed({silent=false}={}){
+  if(!accountsEnabled||!state||projectsFeedLoading)return;
 
-async function refreshProjectsFeed({
-  silent = false
-} = {}) {
-  if (
-    !accountsEnabled ||
-    !state ||
-    projectsFeedLoading
-  ) {
-    return;
-  }
+  projectsFeedLoading=true;
 
-  projectsFeedLoading =
-    true;
+  try{
+    const next=await loadProjectsFeed();
 
-  try {
-    const next =
-      await loadProjectsFeed();
+    const changed=
+      next.version!==projectsFeed.version ||
+      next.updatedAt!==projectsFeed.updatedAt;
 
-    const changed =
-      next.version !==
-        projectsFeed.version ||
-      next.updatedAt !==
-        projectsFeed.updatedAt;
+    projectsFeed=next;
 
-    projectsFeed = next;
+    if(changed&&state)render();
 
-    if (changed && state) {
-      render();
-
-      if (!silent) {
-        toast(
-          'Excedere Projects updated.'
-        );
-      }
-    }
-
-  } catch (e) {
-    console.error(
-      'Projects feed:',
-      e
-    );
-
-    if (!silent) {
+    if(!silent){
       toast(
-        'Projects could not be refreshed. ' +
-        e.message
+        changed
+          ? 'Excedere Projects updated.'
+          : 'Excedere Projects is up to date.'
       );
     }
 
-  } finally {
-    projectsFeedLoading =
-      false;
+  }catch(e){
+    console.error('Projects feed:',e);
+
+    if(!silent){
+      toast('Projects could not be refreshed. '+e.message);
+    }
+
+  }finally{
+    projectsFeedLoading=false;
   }
 }
 
+async function toggleProjectsTask(taskId){
+  const task=projectsFeed.tasks.find(t=>t.id===taskId);
 
-function options(
-  values,
-  selected,
-  empty
-) {
-  return (
-    (
-      empty !== undefined
-        ? `<option value="">${esc(empty)}</option>`
-        : ''
-    ) +
-    values
-      .map(
-        v =>
-          `<option value="${esc(
-            typeof v === 'string'
-              ? v
-              : v.id
-          )}" ${
-            (
-              typeof v === 'string'
-                ? v
-                : v.id
-            ) === selected
-              ? 'selected'
-              : ''
-          }>${esc(
-            typeof v === 'string'
-              ? v
-              : v.title
-          )}</option>`
-      )
-      .join('')
-  );
+  if(!task||projectsSaving.has(taskId))return;
+
+  const complete=
+    task.status!=='Completed';
+
+  projectsSaving.add(taskId);
+  render();
+
+  try{
+    projectsFeed=
+      await setProjectsTaskCompleted(
+        taskId,
+        complete
+      );
+
+    render();
+
+    toast(
+      complete
+        ? 'Projects task completed.'
+        : 'Projects task reopened.'
+    );
+
+  }catch(e){
+    toast(
+      'Could not update Projects. '+
+      e.message
+    );
+
+    render();
+
+  }finally{
+    projectsSaving.delete(taskId);
+  }
 }
 
+function options(values,selected,empty){
+  return (
+    empty!==undefined
+      ? `<option value="">${esc(empty)}</option>`
+      : ''
+  )+
+  values.map(
+    v=>
+      `<option value="${esc(typeof v==='string'?v:v.id)}" ${
+        (typeof v==='string'?v:v.id)===selected
+          ? 'selected'
+          : ''
+      }>${esc(typeof v==='string'?v:v.title)}</option>`
+  ).join('');
+}
 
-const badge = value =>
+const badge=value=>
   `<span class="badge ${
-    value === 'High'
+    value==='High'
       ? 'high'
-      : (
-          value ===
-            'Completed' ||
-          value === 'Live' ||
-          value === 'Used'
-        )
+      : value==='Completed'||value==='Live'||value==='Used'
         ? 'good'
         : ''
   }">${esc(value)}</span>`;
 
-
-const bar = n =>
+const bar=n=>
   `<div class="bar" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${n}"><i style="width:${n}%"></i></div>`;
 
-
-const blank = text =>
+const blank=text=>
   `<div class="empty"><span>◇</span><p>${text}</p></div>`;
 
-
-function taskRow(t) {
-  rows.set(
-    t.key,
-    t
-  );
+function taskRow(t){
+  rows.set(t.key,t);
 
   return `
-    <div class="task ${t.status === 'Completed' ? 'completed' : ''}">
+    <div class="task ${t.status==='Completed'?'completed':''}">
       <button
         class="check"
         data-complete="${esc(t.key)}"
-        aria-label="${t.status === 'Completed' ? 'Reopen' : 'Complete'} ${esc(t.title)}"
-        aria-pressed="${t.status === 'Completed'}"
+        aria-label="${t.status==='Completed'?'Reopen':'Complete'} ${esc(t.title)}"
+        aria-pressed="${t.status==='Completed'}"
       >
-        ${t.status === 'Completed' ? '✓' : ''}
+        ${t.status==='Completed'?'✓':''}
       </button>
 
       <button
@@ -371,35 +191,21 @@ function taskRow(t) {
           <b>·</b>
           ${
             t.time
-              ? esc(t.time) +
-                ' ' +
-                esc(
+              ? esc(t.time)+' '+esc(
                   state.workspace.timeZone
                     .split('/')
                     .pop()
-                    .replaceAll(
-                      '_',
-                      ' '
-                    )
+                    .replaceAll('_',' ')
                 )
               : 'Any time'
           }
-          ${
-            t.recurring
-              ? '<b>·</b> Weekly'
-              : ''
-          }
-          ${
-            t.status ===
-            'In Progress'
-              ? '<b>·</b> In progress'
-              : ''
-          }
+          ${t.recurring?'<b>·</b> Weekly':''}
+          ${t.status==='In Progress'?'<b>·</b> In progress':''}
         </span>
       </button>
 
       ${
-        t.priority === 'High'
+        t.priority==='High'
           ? '<span class="priority-dot" title="High priority"></span>'
           : ''
       }
@@ -415,17 +221,28 @@ function taskRow(t) {
   `;
 }
 
+function projectsTaskRow(t){
+  const busy=
+    projectsSaving.has(t.id);
 
-function projectsTaskRow(t) {
   return `
-    <div class="task ${t.status === 'Completed' ? 'completed' : ''}">
-      <span
+    <div class="task ${t.status==='Completed'?'completed':''}">
+
+      <button
         class="check"
-        aria-hidden="true"
-        title="From Excedere Projects"
+        data-project-complete="${esc(t.id)}"
+        aria-label="${t.status==='Completed'?'Reopen':'Complete'} ${esc(t.title)} in Excedere Projects"
+        aria-pressed="${t.status==='Completed'}"
+        ${busy?'disabled':''}
       >
-        P
-      </span>
+        ${
+          busy
+            ? '…'
+            : t.status==='Completed'
+              ? '✓'
+              : ''
+        }
+      </button>
 
       <div class="task-detail">
         <strong>${esc(t.title)}</strong>
@@ -435,7 +252,7 @@ function projectsTaskRow(t) {
           <b>·</b>
           Excedere Projects
           ${
-            t.priority === 'High'
+            t.priority==='High'
               ? '<b>·</b> High priority'
               : ''
           }
@@ -443,7 +260,7 @@ function projectsTaskRow(t) {
       </div>
 
       ${
-        t.priority === 'High'
+        t.priority==='High'
           ? '<span class="priority-dot" title="High priority"></span>'
           : ''
       }
@@ -452,26 +269,19 @@ function projectsTaskRow(t) {
         class="task-arrow"
         title="Managed in Excedere Projects"
       >
-        ↗
+        P
       </span>
+
     </div>
   `;
 }
 
-
-const displayTaskRow = t =>
-  t.sourceSystem ===
-  'projects'
+const displayTaskRow=t=>
+  t.sourceSystem==='projects'
     ? projectsTaskRow(t)
     : taskRow(t);
 
-
-function panel(
-  title,
-  body,
-  action = '',
-  cls = ''
-) {
+function panel(title,body,action='',cls=''){
   return `
     <section class="panel ${cls}">
       <div class="panel-heading">
@@ -483,222 +293,177 @@ function panel(
   `;
 }
 
-
-const goto = (
-  v,
-  label = 'View all'
-) =>
+const goto=(v,label='View all')=>
   `<button class="text-button" data-nav="${v}">${label} <span aria-hidden="true">↗</span></button>`;
 
-
-function sortTasks(list) {
+function sortTasks(list){
   return [...list].sort(
-    (a, b) =>
-      (
-        a.date ||
-        '9999-99-99'
-      ).localeCompare(
-        b.date ||
-        '9999-99-99'
+    (a,b)=>
+      (a.date||'9999-99-99').localeCompare(
+        b.date||'9999-99-99'
       ) ||
-      (
-        PRIORITIES.indexOf(
-          a.priority
-        ) -
-        PRIORITIES.indexOf(
-          b.priority
-        )
-      )
+      PRIORITIES.indexOf(a.priority)-
+      PRIORITIES.indexOf(b.priority)
   );
 }
 
+function recentlyCompletedProjectTasks(tasks){
+  const cutoff=
+    Date.now()-86400000;
 
-function dashboard() {
-  const d = date();
+  return tasks
+    .filter(
+      t=>
+        t.status==='Completed' &&
+        t.completedAt &&
+        !Number.isNaN(Date.parse(t.completedAt)) &&
+        Date.parse(t.completedAt)>=cutoff
+    )
+    .sort(
+      (a,b)=>
+        Date.parse(b.completedAt)-
+        Date.parse(a.completedAt)
+    )
+    .slice(0,3);
+}
 
-  const start =
-    weekStart(d);
+function dashboard(){
+  const d=date();
+  const start=weekStart(d);
+  const end=addDays(start,6);
 
-  const end =
-    addDays(
-      start,
-      6
-    );
-
-  const flowWeekly =
+  const flowWeekly=
     occurrences(
       state,
       start,
       end
     );
 
-  const flowDue =
+  const flowDue=
     occurrences(
       state,
       d,
       d
     );
 
-  const flowOverdue =
+  const flowOverdue=
     occurrences(
       state,
       '',
-      addDays(
-        d,
-        -1
-      )
+      addDays(d,-1)
     ).filter(
-      t =>
-        t.status !==
-        'Completed'
+      t=>
+        t.status!=='Completed'
     );
 
-  const flowUpcoming =
+  const flowUpcoming=
     occurrences(
       state,
-      addDays(
-        d,
-        1
-      ),
-      addDays(
-        d,
-        14
-      )
+      addDays(d,1),
+      addDays(d,14)
     ).filter(
-      t =>
-        t.status !==
-        'Completed'
+      t=>
+        t.status!=='Completed'
     );
 
+  const projectTasks=
+    projectsFeed.tasks||[];
 
-  const projectTasks =
-    projectsFeed.tasks || [];
-
-
-  const projectDue =
+  const projectDue=
     projectTasks.filter(
-      t =>
-        t.date === d
+      t=>
+        t.date===d
     );
 
-
-  const projectOverdue =
+  const projectOverdue=
     projectTasks.filter(
-      t =>
-        t.status !==
-          'Completed' &&
+      t=>
+        t.status!=='Completed' &&
         t.date &&
-        t.date < d
+        t.date<d
     );
 
-
-  const projectUpcoming =
+  const projectUpcoming=
     projectTasks.filter(
-      t =>
-        t.status !==
-          'Completed' &&
+      t=>
+        t.status!=='Completed' &&
         t.date &&
-        t.date >
-          d &&
-        t.date <=
-          addDays(
-            d,
-            14
-          )
+        t.date>d &&
+        t.date<=addDays(d,14)
     );
 
-
-  const projectWeekly =
+  const projectWeekly=
     projectTasks.filter(
-      t =>
+      t=>
         t.date &&
-        t.date >=
-          start &&
-        t.date <= end
+        t.date>=start &&
+        t.date<=end
     );
 
-
-  const due =
+  const due=
     sortTasks([
       ...flowDue,
       ...projectDue
     ]);
 
-
-  const overdue =
+  const overdue=
     sortTasks([
       ...flowOverdue,
       ...projectOverdue
     ]);
 
-
-  const upcoming =
+  const upcoming=
     sortTasks([
       ...flowUpcoming,
       ...projectUpcoming
-    ]).slice(
-      0,
-      6
-    );
+    ]).slice(0,6);
 
-
-  const weekly = [
+  const weekly=[
     ...flowWeekly,
     ...projectWeekly
   ];
 
+  const p=
+    progress(weekly);
 
-  const p =
-    progress(
-      weekly
-    );
-
-
-  const projectPriorities =
+  const projectPriorities=
     sortTasks(
       projectTasks.filter(
-        t =>
-          t.status !==
-            'Completed' &&
-          t.priority ===
-            'High'
+        t=>
+          t.status!=='Completed' &&
+          t.priority==='High'
       )
-    ).slice(
-      0,
-      4
+    ).slice(0,4);
+
+  const recentProjects=
+    recentlyCompletedProjectTasks(
+      projectTasks
     );
 
-
-  const active =
+  const active=
     state.projects.filter(
-      p =>
+      p=>
         ![
           'Completed',
           'Live'
-        ].includes(
-          p.status
-        )
+        ].includes(p.status)
     );
 
-
-  const ideas =
+  const ideas=
     state.ideas.filter(
-      i =>
-        i.status !==
-        'Used'
+      i=>
+        i.status!=='Used'
     );
 
-
-  const todayRemaining =
+  const todayRemaining=
     due.filter(
-      t =>
-        t.status !==
-        'Completed'
+      t=>
+        t.status!=='Completed'
     ).length;
-
 
   return `
     <div class="intro">
+
       <div>
         <p class="eyebrow">
           YOUR WORK, IN FOCUS
@@ -719,10 +484,12 @@ function dashboard() {
       >
         ＋ Add task
       </button>
+
     </div>
 
 
     <div class="stats">
+
       <div>
         <span>
           Today’s work
@@ -730,6 +497,7 @@ function dashboard() {
 
         <strong>
           ${todayRemaining}
+
           <small>
             tasks remaining
           </small>
@@ -743,6 +511,7 @@ function dashboard() {
 
         <strong>
           ${p.done}
+
           <small>
             of ${p.total} completed
           </small>
@@ -756,6 +525,7 @@ function dashboard() {
 
         <strong>
           ${ideas.length}
+
           <small>
             ready for a next step
           </small>
@@ -769,11 +539,13 @@ function dashboard() {
 
         <strong>
           ${active.length}
+
           <small>
             room to grow
           </small>
         </strong>
       </div>
+
     </div>
 
 
@@ -791,10 +563,7 @@ function dashboard() {
               <span>
                 ${esc(
                   state.workspace.timeZone
-                    .replaceAll(
-                      '_',
-                      ' '
-                    )
+                    .replaceAll('_',' ')
                 )}
               </span>
             </div>
@@ -802,9 +571,7 @@ function dashboard() {
             ${
               due.length
                 ? due
-                    .map(
-                      displayTaskRow
-                    )
+                    .map(displayTaskRow)
                     .join('')
                 : blank(
                     'Nothing scheduled today. Enjoy the space, or add a task.'
@@ -825,12 +592,9 @@ function dashboard() {
                 `Needs attention <span class="count">${overdue.length}</span>`,
 
                 overdue
-                  .slice(
-                    0,
-                    6
-                  )
+                  .slice(0,6)
                   .map(
-                    t =>
+                    t=>
                       `
                         <div class="overdue-date">
                           ${pretty(t.date)}
@@ -856,9 +620,10 @@ function dashboard() {
           upcoming.length
             ? upcoming
                 .map(
-                  t =>
+                  t=>
                     `
                       <div class="upcoming-row">
+
                         <div class="date-chip">
                           <strong>
                             ${t.date.slice(8)}
@@ -869,9 +634,7 @@ function dashboard() {
                               pretty(
                                 t.date,
                                 true
-                              ).split(
-                                ' '
-                              )[1]
+                              ).split(' ')[1]
                             }
                           </span>
                         </div>
@@ -879,6 +642,7 @@ function dashboard() {
                         <div class="upcoming-task">
                           ${displayTaskRow(t)}
                         </div>
+
                       </div>
                     `
                 )
@@ -887,9 +651,7 @@ function dashboard() {
                 'Your next two weeks are clear.'
               ),
 
-          goto(
-            'Schedule'
-          )
+          goto('Schedule')
         )}
 
       </div>
@@ -902,17 +664,18 @@ function dashboard() {
 
           `
             <div class="week-progress">
+
               <div
                 class="ring"
                 style="--progress:${p.percent}%"
               >
                 <strong>
-                  ${p.percent}
-                  <span>%</span>
+                  ${p.percent}<span>%</span>
                 </strong>
               </div>
 
               <div>
+
                 <h3>
                   ${
                     p.done
@@ -922,16 +685,18 @@ function dashboard() {
                 </h3>
 
                 <p>
-                  ${p.total - p.done}
+                  ${p.total-p.done}
                   tasks left this week
                 </p>
 
                 <span class="subtle">
-                  ${pretty(start, true)}
+                  ${pretty(start,true)}
                   to
-                  ${pretty(end, true)}
+                  ${pretty(end,true)}
                 </span>
+
               </div>
+
             </div>
 
             ${bar(p.percent)}
@@ -953,9 +718,26 @@ function dashboard() {
                   </p>
 
                   ${projectPriorities
-                    .map(
-                      displayTaskRow
-                    )
+                    .map(displayTaskRow)
+                    .join('')}
+                `
+              )
+            : ''
+        }
+
+
+        ${
+          recentProjects.length
+            ? panel(
+                'Recently completed in Projects',
+
+                `
+                  <p class="subtle">
+                    Completed in the last 24 hours. Tick again to reopen.
+                  </p>
+
+                  ${recentProjects
+                    .map(displayTaskRow)
                     .join('')}
                 `
               )
@@ -968,30 +750,30 @@ function dashboard() {
 
           `
             <div class="pipeline">
+
               ${[
                 'Idea',
                 'Draft',
                 'Scheduled'
               ]
                 .map(
-                  s =>
+                  s=>
                     `
                       <div>
                         <strong>
                           ${
                             state.ideas.filter(
-                              i =>
-                                i.status ===
-                                s
+                              i=>
+                                i.status===s
                             ).length
                           }
                         </strong>
 
                         <span>
                           ${
-                            s === 'Idea'
+                            s==='Idea'
                               ? 'Ideas'
-                              : s === 'Draft'
+                              : s==='Draft'
                                 ? 'Drafts'
                                 : 'Scheduled'
                           }
@@ -1000,15 +782,13 @@ function dashboard() {
                     `
                 )
                 .join('')}
+
             </div>
 
             ${ideas
-              .slice(
-                0,
-                2
-              )
+              .slice(0,2)
               .map(
-                i =>
+                i=>
                   `
                     <button
                       class="mini-card"
@@ -1031,9 +811,7 @@ function dashboard() {
               .join('')}
           `,
 
-          goto(
-            'Ideas'
-          )
+          goto('Ideas')
         )}
 
 
@@ -1043,27 +821,22 @@ function dashboard() {
           state.projects
             .slice()
             .sort(
-              (a, b) =>
+              (a,b)=>
                 (
-                  a.status ===
-                  'In Progress'
+                  a.status==='In Progress'
                     ? -1
                     : 1
-                ) -
+                )-
                 (
-                  b.status ===
-                  'In Progress'
+                  b.status==='In Progress'
                     ? -1
                     : 1
                 )
             )
-            .slice(
-              0,
-              3
-            )
+            .slice(0,3)
             .map(
-              p => {
-                const n =
+              p=>{
+                const n=
                   projectProgress(
                     state,
                     p,
@@ -1097,9 +870,7 @@ function dashboard() {
               'Create your first project.'
             ),
 
-          goto(
-            'Projects'
-          )
+          goto('Projects')
         )}
 
       </div>
@@ -1108,10 +879,10 @@ function dashboard() {
   `;
 }
 
-
-function toolbar(kind) {
+function toolbar(kind){
   return `
     <div class="toolbar">
+
       <label class="search">
         <span aria-hidden="true">
           ⌕
@@ -1142,9 +913,9 @@ function toolbar(kind) {
         aria-label="Filter by status"
       >
         ${options(
-          kind === 'tasks'
+          kind==='tasks'
             ? TASK_STATUSES
-            : kind === 'ideas'
+            : kind==='ideas'
               ? IDEA_STATUSES
               : PROJECT_STATUSES,
 
@@ -1152,21 +923,21 @@ function toolbar(kind) {
           'All statuses'
         )}
       </select>
+
     </div>
   `;
 }
 
-
-const filtered = list =>
+const filtered=list=>
   list.filter(
-    t =>
+    t=>
       (
         !area ||
-        t.area === area
+        t.area===area
       ) &&
       (
         !status ||
-        t.status === status
+        t.status===status
       ) &&
       (
         !search ||
@@ -1183,14 +954,10 @@ const filtered = list =>
       )
   );
 
-
-function heading(
-  title,
-  sub,
-  kind
-) {
+function heading(title,sub,kind){
   return `
     <div class="intro">
+
       <div>
         <p class="eyebrow">
           PLAN. CREATE. GROW.
@@ -1210,34 +977,32 @@ function heading(
         data-add="${kind}"
       >
         ＋ Add ${
-          kind === 'ideas'
+          kind==='ideas'
             ? 'idea'
-            : kind === 'projects'
+            : kind==='projects'
               ? 'project'
               : 'task'
         }
       </button>
+
     </div>
   `;
 }
 
-
-function schedule() {
-  const start =
+function schedule(){
+  const start=
     addDays(
-      weekStart(
-        date()
-      ),
-      offset * 7
+      weekStart(date()),
+      offset*7
     );
 
-  const end =
+  const end=
     addDays(
       start,
       6
     );
 
-  const list =
+  const list=
     filtered(
       occurrences(
         state,
@@ -1246,7 +1011,7 @@ function schedule() {
       )
     );
 
-  const late =
+  const late=
     filtered(
       occurrences(
         state,
@@ -1257,22 +1022,19 @@ function schedule() {
         )
       )
     ).filter(
-      t =>
-        t.status !==
-        'Completed'
+      t=>
+        t.status!=='Completed'
     );
 
-  const unscheduled =
+  const unscheduled=
     filtered(
       state.tasks
-        .filter(
-          t => !t.date
-        )
+        .filter(t=>!t.date)
         .map(
-          t => ({
+          t=>({
             ...t,
-            key: t.id,
-            originalDate: ''
+            key:t.id,
+            originalDate:''
           })
         )
     );
@@ -1282,14 +1044,13 @@ function schedule() {
       'Your schedule',
       'A little structure. Plenty of breathing room.',
       'tasks'
-    ) +
+    )+
 
-    toolbar(
-      'tasks'
-    ) +
+    toolbar('tasks')+
 
     `
       <div class="week-nav">
+
         <div>
           <button
             class="icon-button"
@@ -1300,9 +1061,9 @@ function schedule() {
           </button>
 
           <h2>
-            ${pretty(start, true)}
+            ${pretty(start,true)}
             to
-            ${pretty(end, true)}
+            ${pretty(end,true)}
           </h2>
 
           <button
@@ -1320,64 +1081,54 @@ function schedule() {
         >
           This week
         </button>
+
       </div>
 
       <p class="subtle">
         Times follow
         ${esc(
           state.workspace.timeZone
-            .replaceAll(
-              '_',
-              ' '
-            )
+            .replaceAll('_',' ')
         )}.
         Weekly tasks repeat on the same weekday.
       </p>
 
       <div class="schedule-days">
-        ${Array.from(
-          {
-            length: 7
-          },
-          (
-            _,
-            i
-          ) => {
-            const d =
-              addDays(
-                start,
-                i
-              );
 
-            const dayTasks =
+        ${Array.from(
+          {length:7},
+          (_,i)=>{
+            const d=
+              addDays(start,i);
+
+            const dayTasks=
               list.filter(
-                t =>
-                  t.date === d
+                t=>
+                  t.date===d
               );
 
             return panel(
               `${pretty(d)}${
-                d === date()
+                d===date()
                   ? '<span class="today-label">Today</span>'
                   : ''
               }`,
 
               dayTasks.length
                 ? dayTasks
-                    .map(
-                      taskRow
-                    )
+                    .map(taskRow)
                     .join('')
                 : '<p class="free-day">A little breathing room.</p>',
 
               `<button class="text-button" data-add-date="${d}" aria-label="Add task on ${pretty(d)}">＋</button>`,
 
-              d === date()
+              d===date()
                 ? 'is-today'
                 : ''
             );
           }
         ).join('')}
+
       </div>
 
       ${
@@ -1385,9 +1136,7 @@ function schedule() {
           ? panel(
               'Unscheduled',
               unscheduled
-                .map(
-                  taskRow
-                )
+                .map(taskRow)
                 .join('')
             )
           : ''
@@ -1400,7 +1149,7 @@ function schedule() {
 
               late
                 .map(
-                  t =>
+                  t=>
                     `
                       <div class="overdue-date">
                         ${pretty(t.date)}
@@ -1417,30 +1166,26 @@ function schedule() {
   );
 }
 
-
-function ideas() {
-  const list =
-    filtered(
-      state.ideas
-    );
+function ideas(){
+  const list=
+    filtered(state.ideas);
 
   return (
     heading(
       'A place for possibilities',
       'Capture it now. Make something of it when you’re ready.',
       'ideas'
-    ) +
+    )+
 
-    toolbar(
-      'ideas'
-    ) +
+    toolbar('ideas')+
 
     `
       <div class="card-grid">
+
         ${
           list
             .map(
-              i =>
+              i=>
                 `
                   <button
                     class="record-card"
@@ -1481,33 +1226,32 @@ function ideas() {
             'No ideas here yet. Capture your next one.'
           )
         }
+
       </div>
     `
   );
 }
 
-
-function projects() {
+function projects(){
   return (
     heading(
       'Build what comes next',
       'Keep the next step in sight.',
       'projects'
-    ) +
+    )+
 
-    toolbar(
-      'projects'
-    ) +
+    toolbar('projects')+
 
     `
       <div class="card-grid">
+
         ${
           filtered(
             state.projects
           )
             .map(
-              p => {
-                const n =
+              p=>{
+                const n=
                   projectProgress(
                     state,
                     p,
@@ -1568,44 +1312,39 @@ function projects() {
             'No projects here yet. Start with one clear goal.'
           )
         }
+
       </div>
     `
   );
 }
 
-
-function linksSettings() {
+function linksSettings(){
   return (
-    '<p class="subtle">These links appear in the task walkthroughs. Google and Meta open their managers; select Excedere after signing in. Add your exact X and Instagram profile links when ready.</p>' +
-
-    '<form id="links-form">' +
-
+    '<p class="subtle">These links appear in the task walkthroughs. Google and Meta open their managers; select Excedere after signing in. Add your exact X and Instagram profile links when ready.</p>'+
+    '<form id="links-form">'+
     state.links
       .map(
-        l =>
-          '<label>' +
-          esc(l.label) +
-          '<input type="url" name="' +
-          esc(l.id) +
-          '" value="' +
-          esc(l.url) +
-          '" placeholder="https://" maxlength="2048">' +
+        l=>
+          '<label>'+
+          esc(l.label)+
+          '<input type="url" name="'+
+          esc(l.id)+
+          '" value="'+
+          esc(l.url)+
+          '" placeholder="https://" maxlength="2048">'+
           '</label>'
       )
-      .join('') +
-
-    '<p class="form-error" role="alert"></p>' +
-
-    '<button class="primary">Save links</button>' +
-
+      .join('')+
+    '<p class="form-error" role="alert"></p>'+
+    '<button class="primary">Save links</button>'+
     '</form>'
   );
 }
 
-
-function settings() {
+function settings(){
   return `
     <div class="intro">
+
       <div>
         <p class="eyebrow">
           MAKE IT YOURS
@@ -1619,7 +1358,9 @@ function settings() {
           Just the essentials, set up your way.
         </p>
       </div>
+
     </div>
+
 
     <div class="settings-grid">
 
@@ -1628,6 +1369,7 @@ function settings() {
 
         `
           <form id="workspace-form">
+
             <label>
               Workspace name
 
@@ -1670,6 +1412,7 @@ function settings() {
             <button class="primary">
               Save preferences
             </button>
+
           </form>
         `
       )}
@@ -1701,9 +1444,10 @@ function settings() {
           </form>
 
           <div class="area-chips">
+
             ${state.areas
               .map(
-                a =>
+                a=>
                   `
                     <span>
                       ${esc(a)}
@@ -1718,6 +1462,7 @@ function settings() {
                   `
               )
               .join('')}
+
           </div>
 
           <p class="subtle">
@@ -1741,16 +1486,19 @@ function settings() {
 
           <p class="subtle">
             Projects remains the source of truth.
-            Flow currently reads project tasks without changing them.
+            Flow can read project tasks and change only their completed or active status.
           </p>
 
           ${
             projectsFeed.updatedAt
-              ? `<p class="subtle">Last Projects update: ${esc(
-                  new Date(
-                    projectsFeed.updatedAt
-                  ).toLocaleString()
-                )}</p>`
+              ? `<p class="subtle">
+                  Last Projects update:
+                  ${esc(
+                    new Date(
+                      projectsFeed.updatedAt
+                    ).toLocaleString()
+                  )}
+                </p>`
               : ''
           }
 
@@ -1786,6 +1534,7 @@ function settings() {
           </p>
 
           <div class="button-row">
+
             <button
               class="secondary"
               data-export
@@ -1799,6 +1548,7 @@ function settings() {
             >
               Restore backup
             </button>
+
           </div>
 
           <input
@@ -1824,6 +1574,7 @@ function settings() {
 
         `
           <div class="about-brand">
+
             <img
               src="./assets/flow-approved.png"
               alt="Flow square identity"
@@ -1840,10 +1591,11 @@ function settings() {
                 Business Beyond Borders
               </p>
             </div>
+
           </div>
 
           <p class="subtle">
-            Version 1.2 · Projects connected.
+            Version 1.3 · Projects two way task status.
           </p>
         `
       )}
@@ -1852,20 +1604,16 @@ function settings() {
   `;
 }
 
+function render(){
+  if(!state)return;
 
-function render() {
-  if (!state) {
-    return;
-  }
-
-  if (!icons[view]) {
-    view =
-      'Dashboard';
+  if(!icons[view]){
+    view='Dashboard';
   }
 
   rows.clear();
 
-  $('#app').innerHTML =
+  $('#app').innerHTML=
     `
       <aside class="sidebar">
 
@@ -1891,26 +1639,23 @@ function render() {
 
 
         <div class="workspace">
+
           <span class="workspace-avatar">
             ${esc(
               state.workspace.name
-                .slice(
-                  0,
-                  1
-                )
+                .slice(0,1)
                 .toUpperCase()
             )}
           </span>
 
           <div>
-            ${esc(
-              state.workspace.name
-            )}
+            ${esc(state.workspace.name)}
 
             <small>
               Your workspace
             </small>
           </div>
+
         </div>
 
 
@@ -1921,16 +1666,14 @@ function render() {
 
         <nav aria-label="Main navigation">
 
-          ${Object.keys(
-            icons
-          )
+          ${Object.keys(icons)
             .map(
-              v =>
+              v=>
                 `
                   <a
                     href="#${v}"
-                    class="${view === v ? 'active' : ''}"
-                    ${view === v ? 'aria-current="page"' : ''}
+                    class="${view===v?'active':''}"
+                    ${view===v?'aria-current="page"':''}
                   >
                     ${icon(v)}
 
@@ -1939,7 +1682,7 @@ function render() {
                     </span>
 
                     ${
-                      view === v
+                      view===v
                         ? '<i></i>'
                         : ''
                     }
@@ -1952,6 +1695,7 @@ function render() {
 
 
         <div class="sidebar-footer">
+
           <span class="live-dot"></span>
 
           ${
@@ -1963,6 +1707,7 @@ function render() {
           <small>
             BUSINESS BEYOND BORDERS
           </small>
+
         </div>
 
       </aside>
@@ -1979,6 +1724,7 @@ function render() {
           <div>
 
             <div class="workspace-clock">
+
               <span
                 class="top-date"
                 id="clock-date"
@@ -1991,15 +1737,13 @@ function render() {
               <small
                 id="clock-zone"
               ></small>
+
             </div>
 
             <span class="avatar">
               ${esc(
                 state.workspace.name
-                  .slice(
-                    0,
-                    1
-                  )
+                  .slice(0,1)
                   .toUpperCase()
               )}
             </span>
@@ -2015,17 +1759,18 @@ function render() {
         >
           ${
             ({
-              Dashboard: dashboard,
-              Schedule: schedule,
-              Ideas: ideas,
-              Projects: projects,
-              Settings: settings
+              Dashboard:dashboard,
+              Schedule:schedule,
+              Ideas:ideas,
+              Projects:projects,
+              Settings:settings
             })[view]()
           }
         </main>
 
 
         <footer class="main-footer">
+
           <span>
             EXCEDERE <b>| FLOW</b>
           </span>
@@ -2033,6 +1778,7 @@ function render() {
           <span>
             One thing at a time.
           </span>
+
         </footer>
 
       </div>
@@ -2041,23 +1787,21 @@ function render() {
   bind();
   updateClock();
 
-  if (
-    accountsEnabled
-  ) {
-    const b =
+  if(accountsEnabled){
+    const b=
       document.createElement(
         'button'
       );
 
-    b.className =
+    b.className=
       'text-button account-logout';
 
-    b.textContent =
+    b.textContent=
       'Log out';
 
-    b.onclick =
-      async () => {
-        if (saving) {
+    b.onclick=
+      async()=>{
+        if(saving){
           toast(
             'Please wait for your work to finish saving.'
           );
@@ -2065,13 +1809,11 @@ function render() {
           return;
         }
 
-        try {
+        try{
           await logout();
 
-        } catch (e) {
-          toast(
-            e.message
-          );
+        }catch(e){
+          toast(e.message);
         }
       };
 
@@ -2079,47 +1821,34 @@ function render() {
       .querySelector(
         '.topbar'
       )
-      ?.append(
-        b
-      );
+      ?.append(b);
   }
 }
 
-
-function navigate(v) {
-  if (view === v) {
+function navigate(v){
+  if(view===v){
     render();
     return;
   }
 
-  location.hash = v;
+  location.hash=v;
 }
-
 
 window.addEventListener(
   'hashchange',
-  () => {
-    view =
-      location.hash.slice(
-        1
-      );
+  ()=>{
+    view=
+      location.hash.slice(1);
 
-    area = '';
-    status = '';
-    search = '';
+    area='';
+    status='';
+    search='';
 
     render();
   }
 );
 
-
-function field(
-  label,
-  name,
-  value = '',
-  type = 'text',
-  extra = ''
-) {
+function field(label,name,value='',type='text',extra=''){
   return `
     <label>
       ${label}
@@ -2134,14 +1863,7 @@ function field(
   `;
 }
 
-
-function select(
-  label,
-  name,
-  values,
-  value,
-  empty
-) {
+function select(label,name,values,value,empty){
   return `
     <label>
       ${label}
@@ -2157,14 +1879,10 @@ function select(
   `;
 }
 
+function showDialog(html){
+  editorRevision=revision;
 
-function showDialog(html) {
-  editorRevision =
-    revision;
-
-  $('#editor').innerHTML =
-    html;
-
+  $('#editor').innerHTML=html;
   $('#editor').showModal();
 
   $('#editor')
@@ -2173,186 +1891,161 @@ function showDialog(html) {
     )
     ?.addEventListener(
       'click',
-      () =>
-        $('#editor').close()
+      ()=>$('#editor').close()
     );
 }
 
-
-function currentTask(row) {
+function currentTask(row){
   return row.recurring
     ? {
         ...row,
-        ...state.overrides[
-          row.key
-        ]
+        ...state.overrides[row.key]
       }
     : {
         ...row,
         ...state.tasks.find(
-          t =>
-            t.id === row.id
+          t=>t.id===row.id
         )
       };
 }
 
-
-function openTask(row) {
-  const r =
+function openTask(row){
+  const r=
     currentTask(row);
 
-  const steps =
-    r.checklist || [];
+  const steps=
+    r.checklist||[];
 
-  const done =
+  const done=
     steps.filter(
-      s =>
-        s.done
+      s=>s.done
     ).length;
 
   showDialog(
-    '<div class="dialog-heading">' +
-      '<div>' +
-        '<p class="eyebrow">ONE STEP AT A TIME</p>' +
-        '<h2 id="dialog-title">' +
-          esc(r.title) +
-        '</h2>' +
-      '</div>' +
-      '<button class="icon-button" data-close aria-label="Close task">×</button>' +
-    '</div>' +
+    '<div class="dialog-heading">'+
+      '<div>'+
+        '<p class="eyebrow">ONE STEP AT A TIME</p>'+
+        '<h2 id="dialog-title">'+
+          esc(r.title)+
+        '</h2>'+
+      '</div>'+
+      '<button class="icon-button" data-close aria-label="Close task">×</button>'+
+    '</div>'+
 
-    '<p class="subtle">' +
-      esc(r.area) +
-      ' · ' +
-      pretty(r.date) +
+    '<p class="subtle">'+
+      esc(r.area)+
+      ' · '+
+      pretty(r.date)+
       (
         r.time
-          ? ' · ' +
-            esc(r.time)
+          ? ' · '+esc(r.time)
           : ''
-      ) +
-    '</p>' +
+      )+
+    '</p>'+
 
-    '<div class="walkthrough-progress">' +
-      '<span>' +
-        done +
-        ' of ' +
-        steps.length +
-        ' steps complete' +
-      '</span>' +
-
-      badge(r.status) +
-    '</div>' +
+    '<div class="walkthrough-progress">'+
+      '<span>'+
+        done+
+        ' of '+
+        steps.length+
+        ' steps complete'+
+      '</span>'+
+      badge(r.status)+
+    '</div>'+
 
     bar(
       steps.length
         ? Math.round(
-            done /
-            steps.length *
+            done/
+            steps.length*
             100
           )
         : 0
-    ) +
+    )+
 
-    '<div class="task-checklist">' +
-
+    '<div class="task-checklist">'+
       (
         steps.length
           ? steps
               .map(
-                s =>
-                  '<label class="walkthrough-step">' +
-                    '<input type="checkbox" data-step="' +
-                    esc(s.id) +
-                    '" ' +
+                s=>
+                  '<label class="walkthrough-step">'+
+                    '<input type="checkbox" data-step="'+
+                    esc(s.id)+
+                    '" '+
                     (
                       s.done
                         ? 'checked'
                         : ''
-                    ) +
-                    '>' +
-                    '<span>' +
-                      esc(s.label) +
-                    '</span>' +
+                    )+
+                    '>'+
+                    '<span>'+
+                      esc(s.label)+
+                    '</span>'+
                   '</label>'
               )
               .join('')
           : '<p class="subtle">Add your own steps using Edit task.</p>'
-      ) +
+      )+
+    '</div>'+
 
-    '</div>' +
-
-    '<div class="task-links">' +
-
+    '<div class="task-links">'+
       (
-        r.linkIds || []
+        r.linkIds||[]
       )
         .map(
-          id =>
+          id=>
             state.links.find(
-              l =>
-                l.id === id
+              l=>l.id===id
             )
         )
         .filter(Boolean)
         .map(
-          l =>
-            l.url &&
-            safeLink(
-              l.url
-            )
-              ? '<a class="secondary" href="' +
-                esc(l.url) +
-                '" target="_blank" rel="noopener noreferrer">Open ' +
-                esc(l.label) +
+          l=>
+            l.url&&safeLink(l.url)
+              ? '<a class="secondary" href="'+
+                esc(l.url)+
+                '" target="_blank" rel="noopener noreferrer">Open '+
+                esc(l.label)+
                 ' ↗</a>'
-              : '<span class="subtle">' +
-                esc(l.label) +
+              : '<span class="subtle">'+
+                esc(l.label)+
                 ': add the link in Settings.</span>'
         )
-        .join('') +
+        .join('')+
+    '</div>'+
 
-    '</div>' +
+    '<label>Working notes'+
+      '<textarea id="working-notes" rows="4" maxlength="10000">'+
+        esc(r.notes)+
+      '</textarea>'+
+    '</label>'+
 
-    '<label>Working notes' +
-      '<textarea id="working-notes" rows="4" maxlength="10000">' +
-        esc(r.notes) +
-      '</textarea>' +
-    '</label>' +
+    '<button class="text-button" id="save-working-notes">Save notes</button>'+
 
-    '<button class="text-button" id="save-working-notes">Save notes</button>' +
-
-    '<p class="form-note">' +
+    '<p class="form-note">'+
       (
         r.recurring
           ? 'Ticks and notes belong to this occurrence. A new week starts with a fresh checklist.'
           : 'Ticks and notes are saved with this task.'
-      ) +
-    '</p>' +
+      )+
+    '</p>'+
 
-    '<div class="dialog-actions">' +
-      '<button class="secondary" id="edit-task-details">Edit task</button>' +
-      '<button class="primary" id="finish-task">' +
+    '<div class="dialog-actions">'+
+      '<button class="secondary" id="edit-task-details">Edit task</button>'+
+      '<button class="primary" id="finish-task">'+
         (
-          r.status === 'Completed'
+          r.status==='Completed'
             ? 'Reopen task'
             : 'Mark task complete'
-        ) +
-      '</button>' +
+        )+
+      '</button>'+
     '</div>'
   );
 
-
-  const save =
-    async (
-      patch,
-      message,
-      focus
-    ) => {
-      if (
-        editorRevision !==
-        revision
-      ) {
+  const save=
+    async(patch,message,focus)=>{
+      if(editorRevision!==revision){
         toast(
           'Data changed. Close and reopen this task before saving.'
         );
@@ -2360,12 +2053,12 @@ function openTask(row) {
         return false;
       }
 
-      patch.notes =
+      patch.notes=
         $('#working-notes').value;
 
-      if (
+      if(
         await mutate(
-          s =>
+          s=>
             updateOccurrence(
               s,
               r,
@@ -2373,16 +2066,14 @@ function openTask(row) {
             ),
           message
         )
-      ) {
+      ){
         openTask(
           currentTask(r)
         );
 
-        if (focus) {
+        if(focus){
           $('#editor')
-            .querySelector(
-              focus
-            )
+            .querySelector(focus)
             ?.focus();
         }
 
@@ -2392,82 +2083,70 @@ function openTask(row) {
       return false;
     };
 
-
   $('#editor')
     .querySelectorAll(
       '[data-step]'
     )
     .forEach(
-      input =>
-        input.onchange =
-          async () => {
-            const checklist =
+      input=>
+        input.onchange=
+          async()=>{
+            const checklist=
               steps.map(
-                s => ({
+                s=>({
                   ...s,
                   done:
-                    s.id ===
-                    input.dataset.step
+                    s.id===input.dataset.step
                       ? input.checked
                       : s.done
                 })
               );
 
-            if (
+            if(
               !await save(
-                {
-                  checklist
-                },
+                {checklist},
                 'Step saved',
-                '[data-step="' +
-                input.dataset.step +
+                '[data-step="'+
+                input.dataset.step+
                 '"]'
               )
-            ) {
-              input.checked =
+            ){
+              input.checked=
                 !input.checked;
             }
           }
     );
 
+  $('#save-working-notes').onclick=
+    ()=>save(
+      {},
+      'Notes saved',
+      '#working-notes'
+    );
 
-  $('#save-working-notes').onclick =
-    () =>
-      save(
-        {},
-        'Notes saved',
-        '#working-notes'
-      );
+  $('#finish-task').onclick=
+    ()=>save(
+      {
+        status:
+          r.status==='Completed'
+            ? 'Not Started'
+            : 'Completed'
+      },
 
+      r.status==='Completed'
+        ? 'Task reopened'
+        : 'Task completed'
+    );
 
-  $('#finish-task').onclick =
-    () =>
-      save(
-        {
-          status:
-            r.status ===
-            'Completed'
-              ? 'Not Started'
-              : 'Completed'
-        },
-
-        r.status ===
-        'Completed'
-          ? 'Task reopened'
-          : 'Task completed'
-      );
-
-
-  $('#edit-task-details').onclick =
-    async () => {
-      if (
-        $('#working-notes').value !==
-          r.notes &&
+  $('#edit-task-details').onclick=
+    async()=>{
+      if(
+        $('#working-notes').value!==r.notes &&
         !await save(
           {},
           'Notes saved'
         )
-      ) {
+      ){
         return;
       }
 
@@ -2480,45 +2159,38 @@ function openTask(row) {
     };
 }
 
+function openEditor(kind,record=null,newDate=date()){
+  const task=
+    kind==='tasks';
 
-function openEditor(
-  kind,
-  record = null,
-  newDate = date()
-) {
-  const task =
-    kind === 'tasks';
+  const idea=
+    kind==='ideas';
 
-  const idea =
-    kind === 'ideas';
-
-  const r =
-    record || {
-      title: '',
-      area:
-        state.areas[0] ||
-        'Admin',
-      priority: 'Medium',
+  const r=
+    record||
+    {
+      title:'',
+      area:state.areas[0]||'Admin',
+      priority:'Medium',
       status:
         task
           ? 'Not Started'
           : idea
             ? 'Idea'
             : 'Not Started',
-      notes: '',
-      date: newDate,
-      time: '',
-      projectId: '',
-      progress: 0
+      notes:'',
+      date:newDate,
+      time:'',
+      projectId:'',
+      progress:0
     };
 
-  const name =
+  const name=
     task
       ? 'task'
       : idea
         ? 'idea'
         : 'project';
-
 
   showDialog(
     `<form id="record-form">
@@ -2579,9 +2251,7 @@ function openEditor(
           >
 
           <datalist id="area-options">
-            ${options(
-              state.areas
-            )}
+            ${options(state.areas)}
           </datalist>
         </label>
 
@@ -2597,13 +2267,11 @@ function openEditor(
         ${select(
           'Status',
           'status',
-
           task
             ? TASK_STATUSES
             : idea
               ? IDEA_STATUSES
               : PROJECT_STATUSES,
-
           r.status
         )}
 
@@ -2631,7 +2299,7 @@ function openEditor(
                 r.recurring
                   ? 'required'
                   : ''
-              ) +
+              )+
               field(
                 'Time (workspace timezone)',
                 'time',
@@ -2643,8 +2311,7 @@ function openEditor(
 
 
         ${
-          !task &&
-          !idea
+          !task&&!idea
             ? field(
                 'Progress (%)',
                 'progress',
@@ -2659,24 +2326,21 @@ function openEditor(
 
 
       ${
-        task &&
-        !record
+        task&&!record
           ? '<label class="checkbox-label"><input type="checkbox" name="recurring"> Repeat every week on this day</label>'
           : ''
       }
 
 
       ${
-        task &&
-        record?.recurring
+        task&&record?.recurring
           ? '<p class="form-note">You’re editing this occurrence only. Other weeks keep their own schedule and status.</p>'
           : ''
       }
 
 
       ${
-        !task &&
-        !idea
+        !task&&!idea
           ? '<p class="form-note">Linked tasks calculate progress automatically. Otherwise use the percentage above.</p>'
           : ''
       }
@@ -2684,8 +2348,7 @@ function openEditor(
 
       <label>
         ${
-          !task &&
-          !idea
+          !task&&!idea
             ? 'Next action / notes'
             : 'Notes'
         }
@@ -2713,63 +2376,33 @@ function openEditor(
 
       ${
         task
-          ? `
-              <label>
-                Checklist steps (one per line)
-
-                <textarea
-                  name="checklist"
-                  rows="5"
-                  maxlength="50000"
-                >${esc(
+          ? '<label>Checklist steps (one per line)<textarea name="checklist" rows="5" maxlength="50000">'+
+            esc(
+              (r.checklist||[])
+                .map(s=>s.label)
+                .join('\n')
+            )+
+            '</textarea></label>'+
+            '<fieldset class="link-picker">'+
+            '<legend>Useful links for this task</legend>'+
+            state.links
+              .map(
+                l=>
+                  '<label class="checkbox-label">'+
+                  '<input type="checkbox" name="linkIds" value="'+
+                  esc(l.id)+
+                  '" '+
                   (
-                    r.checklist ||
-                    []
-                  )
-                    .map(
-                      s =>
-                        s.label
-                    )
-                    .join('\n')
-                )}</textarea>
-              </label>
-
-
-              <fieldset class="link-picker">
-
-                <legend>
-                  Useful links for this task
-                </legend>
-
-                ${state.links
-                  .map(
-                    l =>
-                      `
-                        <label class="checkbox-label">
-                          <input
-                            type="checkbox"
-                            name="linkIds"
-                            value="${esc(l.id)}"
-                            ${
-                              (
-                                r.linkIds ||
-                                []
-                              ).includes(
-                                l.id
-                              )
-                                ? 'checked'
-                                : ''
-                            }
-                          >
-
-                          ${esc(l.label)}
-                        </label>
-                      `
-                  )
-                  .join('')}
-
-              </fieldset>
-            `
+                    (r.linkIds||[]).includes(l.id)
+                      ? 'checked'
+                      : ''
+                  )+
+                  '>'+
+                  esc(l.label)+
+                  '</label>'
+              )
+              .join('')+
+            '</fieldset>'
           : ''
       }
 
@@ -2809,39 +2442,31 @@ function openEditor(
     </form>`
   );
 
+  $('#editor [data-cancel]').onclick=
+    ()=>$('#editor').close();
 
-  $('#editor [data-cancel]').onclick =
-    () =>
-      $('#editor').close();
-
-
-  $('#record-form').onsubmit =
-    async e => {
+  $('#record-form').onsubmit=
+    async e=>{
       e.preventDefault();
 
-      if (
-        editorRevision !==
-        revision
-      ) {
-        $('#editor .form-error').textContent =
+      if(editorRevision!==revision){
+        $('#editor .form-error').textContent=
           'Your data changed in another tab. Close this editor and reopen the record before saving.';
 
         return;
       }
 
-      const f =
+      const f=
         new FormData(
           e.target
         );
 
-      const patch = {
+      const patch={
         title:
-          f.get('title')
-            .trim(),
+          f.get('title').trim(),
 
         area:
-          f.get('area')
-            .trim(),
+          f.get('area').trim(),
 
         priority:
           f.get('priority'),
@@ -2853,19 +2478,14 @@ function openEditor(
           f.get('notes')
       };
 
-
-      if (
-        !patch.title ||
-        !patch.area
-      ) {
-        $('#editor .form-error').textContent =
+      if(!patch.title||!patch.area){
+        $('#editor .form-error').textContent=
           'Please enter a title and area.';
 
         return;
       }
 
-
-      if (task) {
+      if(task){
         Object.assign(
           patch,
           {
@@ -2876,51 +2496,37 @@ function openEditor(
               f.get('time'),
 
             projectId:
-              f.get(
-                'projectId'
-              ),
+              f.get('projectId'),
 
             linkIds:
-              f.getAll(
-                'linkIds'
-              )
+              f.getAll('linkIds')
           }
         );
 
-
-        const used =
+        const used=
           new Set();
 
-
-        patch.checklist =
+        patch.checklist=
           String(
-            f.get(
-              'checklist'
-            ) || ''
+            f.get('checklist')||''
           )
             .split('\n')
             .map(
-              label =>
-                label.trim()
+              label=>label.trim()
             )
             .filter(Boolean)
             .map(
-              label => {
-                const prior =
-                  (
-                    r.checklist ||
-                    []
-                  ).find(
-                    s =>
-                      s.label ===
-                        label &&
-                      !used.has(
-                        s.id
-                      )
-                  );
+              label=>{
+                const prior=
+                  (r.checklist||[])
+                    .find(
+                      s=>
+                        s.label===label &&
+                        !used.has(s.id)
+                    );
 
-                const id =
-                  prior?.id ||
+                const id=
+                  prior?.id||
                   uid();
 
                 used.add(id);
@@ -2929,89 +2535,72 @@ function openEditor(
                   id,
                   label,
                   done:
-                    prior?.done ||
+                    prior?.done||
                     false
                 };
               }
             );
       }
 
-
-      if (
+      if(
         task &&
         !record &&
-        f.get(
-          'recurring'
-        ) &&
+        f.get('recurring') &&
         !patch.date
-      ) {
-        $('#editor .form-error').textContent =
+      ){
+        $('#editor .form-error').textContent=
           'Choose a date for your weekly task.';
 
         return;
       }
 
-
-      if (
-        !task &&
-        !idea
-      ) {
-        patch.progress =
+      if(!task&&!idea){
+        patch.progress=
           Number(
-            f.get(
-              'progress'
-            )
+            f.get('progress')
           );
       }
 
-
-      if (
+      if(
         await mutate(
-          s => {
-            if (
+          s=>{
+            if(
               !s.areas.includes(
                 patch.area
               )
-            ) {
+            ){
               s.areas.push(
                 patch.area
               );
             }
 
-
-            if (record) {
-              if (task) {
+            if(record){
+              if(task){
                 updateOccurrence(
                   s,
                   record,
                   patch
                 );
 
-              } else {
+              }else{
                 Object.assign(
                   s[kind].find(
-                    x =>
-                      x.id ===
-                      record.id
+                    x=>x.id===record.id
                   ),
                   patch
                 );
               }
 
-            } else {
+            }else{
               s[kind].push({
                 ...patch,
-                id: uid(),
-                workspaceId:
-                  s.workspace.id,
-
+                id:uid(),
+                workspaceId:s.workspace.id,
                 ...(
                   task
                     ? {
                         recurring:
-                          !!f.get(
-                            'recurring'
-                          )
+                          !!f.get('recurring')
                       }
                     : {}
                 )
@@ -3019,39 +2608,37 @@ function openEditor(
             }
           },
 
-          `${name[0].toUpperCase() + name.slice(1)} saved`
+          `${
+            name[0].toUpperCase()+
+            name.slice(1)
+          } saved`
         )
-      ) {
+      ){
         $('#editor').close();
       }
     };
 
-
-  if (record) {
-    $('#editor [data-delete]').onclick =
-      () =>
-        confirmDelete(
-          kind,
-          record
-        );
+  if(record){
+    $('#editor [data-delete]').onclick=
+      ()=>confirmDelete(
+        kind,
+        record
+      );
   }
 }
 
-
-function confirmDelete(
-  kind,
-  r
-) {
+function confirmDelete(kind,r){
   $('#editor').close();
 
   showDialog(
     `
       <div class="dialog-heading">
+
         <h2 id="dialog-title">
           Delete ${
-            kind === 'tasks'
+            kind==='tasks'
               ? 'task'
-              : kind === 'ideas'
+              : kind==='ideas'
                 ? 'idea'
                 : 'project'
           }?
@@ -3064,6 +2651,7 @@ function confirmDelete(
         >
           ×
         </button>
+
       </div>
 
       <p>
@@ -3073,8 +2661,7 @@ function confirmDelete(
       <p class="subtle">
         This cannot be undone.
         ${
-          kind ===
-          'projects'
+          kind==='projects'
             ? ' Linked tasks will be kept without a project.'
             : ''
         }
@@ -3106,18 +2693,12 @@ function confirmDelete(
     `
   );
 
+  $('#editor [data-cancel]').onclick=
+    ()=>$('#editor').close();
 
-  $('#editor [data-cancel]').onclick =
-    () =>
-      $('#editor').close();
-
-
-  $('#editor [data-confirm-delete]').onclick =
-    async () => {
-      if (
-        editorRevision !==
-        revision
-      ) {
+  $('#editor [data-confirm-delete]').onclick=
+    async()=>{
+      if(editorRevision!==revision){
         toast(
           'Data changed. Close and reopen this record.'
         );
@@ -3125,60 +2706,40 @@ function confirmDelete(
         return;
       }
 
+      const series=
+        $('#delete-series')?.checked;
 
-      const series =
-        $('#delete-series')
-          ?.checked;
-
-
-      if (
+      if(
         await mutate(
-          s => {
-            if (
-              kind === 'tasks'
-            ) {
+          s=>{
+            if(kind==='tasks'){
               removeTask(
                 s,
                 r,
                 series
               );
 
-            } else {
-              s[kind] =
+            }else{
+              s[kind]=
                 s[kind].filter(
-                  x =>
-                    x.id !==
-                    r.id
+                  x=>x.id!==r.id
                 );
 
-
-              if (
-                kind ===
-                'projects'
-              ) {
+              if(kind==='projects'){
                 s.tasks.forEach(
-                  t => {
-                    if (
-                      t.projectId ===
-                      r.id
-                    ) {
-                      t.projectId =
-                        '';
+                  t=>{
+                    if(t.projectId===r.id){
+                      t.projectId='';
                     }
                   }
                 );
 
-
                 Object.values(
                   s.overrides
                 ).forEach(
-                  t => {
-                    if (
-                      t.projectId ===
-                      r.id
-                    ) {
-                      t.projectId =
-                        '';
+                  t=>{
+                    if(t.projectId===r.id){
+                      t.projectId='';
                     }
                   }
                 );
@@ -3188,62 +2749,40 @@ function confirmDelete(
 
           'Deleted'
         )
-      ) {
+      ){
         $('#editor').close();
       }
     };
 }
 
-
-function download(
-  contents,
-  name
-) {
-  const url =
+function download(contents,name){
+  const url=
     URL.createObjectURL(
       new Blob(
-        [
-          contents
-        ],
+        [contents],
         {
-          type:
-            'application/json'
+          type:'application/json'
         }
       )
     );
 
-  const a =
-    document.createElement(
-      'a'
-    );
+  const a=
+    document.createElement('a');
 
-  a.href =
-    url;
-
-  a.download =
-    name;
-
+  a.href=url;
+  a.download=name;
   a.click();
 
   setTimeout(
-    () =>
-      URL.revokeObjectURL(
-        url
-      ),
+    ()=>URL.revokeObjectURL(url),
     1000
   );
 }
 
+function restore(file){
+  if(!file)return;
 
-function restore(file) {
-  if (!file) {
-    return;
-  }
-
-  if (
-    file.size >
-    10000000
-  ) {
+  if(file.size>10000000){
     toast(
       'Choose a backup smaller than 10 MB.'
     );
@@ -3251,30 +2790,23 @@ function restore(file) {
     return;
   }
 
-
   file.text()
     .then(
-      raw => {
+      raw=>{
         let imported;
 
-        try {
-          imported =
+        try{
+          imported=
             upgradeGuides(
               validate(
-                JSON.parse(
-                  raw
-                )
+                JSON.parse(raw)
               )
             );
 
-        } catch (e) {
-          toast(
-            e.message
-          );
-
+        }catch(e){
+          toast(e.message);
           return;
         }
-
 
         showDialog(
           `
@@ -3321,26 +2853,21 @@ function restore(file) {
           `
         );
 
+        $('#editor [data-current-export]').onclick=
+          ()=>download(
+            repo.raw(),
+            'flow-before-restore.json'
+          );
 
-        $('#editor [data-current-export]').onclick =
-          () =>
-            download(
-              repo.raw(),
-              'flow-before-restore.json'
-            );
-
-
-        $('#editor [data-restore]').onclick =
-          async () => {
-            if (
+        $('#editor [data-restore]').onclick=
+          async()=>{
+            if(
               await mutate(
-                s => {
-                  for (
+                s=>{
+                  for(
                     const k
-                    of Object.keys(
-                      s
-                    )
-                  ) {
+                    of Object.keys(s)
+                  ){
                     delete s[k];
                   }
 
@@ -3352,165 +2879,156 @@ function restore(file) {
 
                 'Backup restored'
               )
-            ) {
+            ){
               $('#editor').close();
             }
           };
       }
     )
     .catch(
-      () =>
-        toast(
-          'This backup could not be read.'
-        )
+      ()=>toast(
+        'This backup could not be read.'
+      )
     );
 }
 
-
-function bind() {
+function bind(){
   document
     .querySelectorAll(
       '[data-nav]'
     )
     .forEach(
-      b =>
-        b.onclick =
-          () =>
-            navigate(
-              b.dataset.nav
-            )
+      b=>
+        b.onclick=
+          ()=>navigate(
+            b.dataset.nav
+          )
     );
-
 
   document
     .querySelectorAll(
       '[data-add]'
     )
     .forEach(
-      b =>
-        b.onclick =
-          () =>
-            openEditor(
-              b.dataset.add
-            )
+      b=>
+        b.onclick=
+          ()=>openEditor(
+            b.dataset.add
+          )
     );
-
 
   document
     .querySelectorAll(
       '[data-add-date]'
     )
     .forEach(
-      b =>
-        b.onclick =
-          () =>
-            openEditor(
-              'tasks',
-              null,
-              b.dataset.addDate
-            )
+      b=>
+        b.onclick=
+          ()=>openEditor(
+            'tasks',
+            null,
+            b.dataset.addDate
+          )
     );
-
 
   document
     .querySelectorAll(
       '[data-edit-task]'
     )
     .forEach(
-      b =>
-        b.onclick =
-          () =>
-            openTask(
-              rows.get(
-                b.dataset.editTask
-              )
+      b=>
+        b.onclick=
+          ()=>openTask(
+            rows.get(
+              b.dataset.editTask
             )
+          )
     );
-
 
   document
     .querySelectorAll(
       '[data-complete]'
     )
     .forEach(
-      b =>
-        b.onclick =
-          () => {
-            const r =
+      b=>
+        b.onclick=
+          ()=>{
+            const r=
               rows.get(
                 b.dataset.complete
               );
 
             mutate(
-              s =>
+              s=>
                 updateOccurrence(
                   s,
                   r,
                   {
                     status:
-                      r.status ===
-                      'Completed'
+                      r.status==='Completed'
                         ? 'Not Started'
                         : 'Completed'
                   }
                 ),
 
-              r.status ===
-              'Completed'
+              r.status==='Completed'
                 ? 'Task reopened'
                 : 'One more thing done.'
             );
           }
     );
 
+  document
+    .querySelectorAll(
+      '[data-project-complete]'
+    )
+    .forEach(
+      b=>
+        b.onclick=
+          ()=>toggleProjectsTask(
+            b.dataset.projectComplete
+          )
+    );
 
   document
     .querySelectorAll(
       '[data-edit-idea]'
     )
     .forEach(
-      b =>
-        b.onclick =
-          () =>
-            openEditor(
-              'ideas',
-              state.ideas.find(
-                i =>
-                  i.id ===
-                  b.dataset.editIdea
-              )
+      b=>
+        b.onclick=
+          ()=>openEditor(
+            'ideas',
+            state.ideas.find(
+              i=>i.id===b.dataset.editIdea
             )
+          )
     );
-
 
   document
     .querySelectorAll(
       '[data-edit-project]'
     )
     .forEach(
-      b =>
-        b.onclick =
-          () =>
-            openEditor(
-              'projects',
-              state.projects.find(
-                i =>
-                  i.id ===
-                  b.dataset.editProject
-              )
+      b=>
+        b.onclick=
+          ()=>openEditor(
+            'projects',
+            state.projects.find(
+              i=>i.id===b.dataset.editProject
             )
+          )
     );
-
 
   document
     .querySelectorAll(
       '[data-week]'
     )
     .forEach(
-      b =>
-        b.onclick =
-          () => {
-            offset +=
+      b=>
+        b.onclick=
+          ()=>{
+            offset+=
               Number(
                 b.dataset.week
               );
@@ -3519,182 +3037,143 @@ function bind() {
           }
     );
 
-
-  if (
-    $('[data-this-week]')
-  ) {
-    $('[data-this-week]').onclick =
-      () => {
-        offset = 0;
+  if($('[data-this-week]')){
+    $('[data-this-week]').onclick=
+      ()=>{
+        offset=0;
         render();
       };
   }
 
-
-  if (
-    $('#area-filter')
-  ) {
-    $('#area-filter').onchange =
-      e => {
-        area =
+  if($('#area-filter')){
+    $('#area-filter').onchange=
+      e=>{
+        area=
           e.target.value;
 
         render();
       };
   }
 
-
-  if (
-    $('#status-filter')
-  ) {
-    $('#status-filter').onchange =
-      e => {
-        status =
+  if($('#status-filter')){
+    $('#status-filter').onchange=
+      e=>{
+        status=
           e.target.value;
 
         render();
       };
   }
 
-
-  if ($('#search')) {
-    $('#search').oninput =
-      e => {
-        const pos =
+  if($('#search')){
+    $('#search').oninput=
+      e=>{
+        const pos=
           e.target.selectionStart;
 
-        search =
+        search=
           e.target.value;
 
         render();
 
         $('#search').focus();
 
-        try {
+        try{
           $('#search')
             .setSelectionRange(
               pos,
               pos
             );
-        } catch {}
+        }catch{}
       };
   }
 
-
-  if (
-    $('#workspace-form')
-  ) {
-    $('#workspace-form').onsubmit =
-      e => {
+  if($('#workspace-form')){
+    $('#workspace-form').onsubmit=
+      e=>{
         e.preventDefault();
 
-        const f =
+        const f=
           new FormData(
             e.target
           );
 
-        if (
-          !f.get(
-            'name'
-          ).trim()
-        ) {
-          return;
-        }
+        if(
+          !f.get('name').trim()
+        )return;
 
         mutate(
-          s => {
-            s.workspace.name =
-              f.get(
-                'name'
-              ).trim();
+          s=>{
+            s.workspace.name=
+              f.get('name').trim();
 
-            s.workspace.timeZone =
-              f.get(
-                'timeZone'
-              );
+            s.workspace.timeZone=
+              f.get('timeZone');
           }
         );
       };
   }
 
-
-  if (
-    $('#links-form')
-  ) {
-    $('#links-form').onsubmit =
-      e => {
+  if($('#links-form')){
+    $('#links-form').onsubmit=
+      e=>{
         e.preventDefault();
 
-        const f =
+        const f=
           new FormData(
             e.target
           );
 
-        const links =
+        const links=
           state.links.map(
-            l => ({
+            l=>({
               ...l,
               url:
-                f.get(
-                  l.id
-                ).trim()
+                f.get(l.id).trim()
             })
           );
 
-        if (
+        if(
           links.some(
-            l =>
-              !safeLink(
-                l.url
-              )
+            l=>!safeLink(l.url)
           )
-        ) {
-          $('#links-form .form-error').textContent =
+        ){
+          $('#links-form .form-error').textContent=
             'Please use HTTPS links, or leave unused links blank.';
 
           return;
         }
 
         mutate(
-          s =>
-            s.links =
-              links,
-
+          s=>s.links=links,
           'Useful links saved'
         );
       };
   }
 
-
-  if (
-    $('#area-form')
-  ) {
-    $('#area-form').onsubmit =
-      e => {
+  if($('#area-form')){
+    $('#area-form').onsubmit=
+      e=>{
         e.preventDefault();
 
-        const a =
+        const a=
           new FormData(
             e.target
           )
-            .get(
-              'area'
-            )
+            .get('area')
             .trim();
 
-        if (a) {
+        if(a){
           mutate(
-            s => {
-              if (
+            s=>{
+              if(
                 !s.areas.some(
-                  x =>
-                    x.toLowerCase() ===
+                  x=>
+                    x.toLowerCase()===
                     a.toLowerCase()
                 )
-              ) {
-                s.areas.push(
-                  a
-                );
+              ){
+                s.areas.push(a);
               }
             }
           );
@@ -3702,19 +3181,18 @@ function bind() {
       };
   }
 
-
   document
     .querySelectorAll(
       '[data-remove-area]'
     )
     .forEach(
-      b =>
-        b.onclick =
-          () => {
-            const a =
+      b=>
+        b.onclick=
+          ()=>{
+            const a=
               b.dataset.removeArea;
 
-            if (
+            if(
               [
                 ...state.tasks,
                 ...state.ideas,
@@ -3723,10 +3201,9 @@ function bind() {
                   state.overrides
                 )
               ].some(
-                r =>
-                  r.area === a
+                r=>r.area===a
               )
-            ) {
+            ){
               toast(
                 'This area is in use. Move its records to another area first.'
               );
@@ -3735,11 +3212,10 @@ function bind() {
             }
 
             mutate(
-              s =>
-                s.areas =
+              s=>
+                s.areas=
                   s.areas.filter(
-                    x =>
-                      x !== a
+                    x=>x!==a
                   ),
 
               'Area removed'
@@ -3747,75 +3223,54 @@ function bind() {
           }
     );
 
+  if($('[data-export]')){
+    $('[data-export]').onclick=
+      ()=>download(
+        JSON.stringify(
+          state,
+          null,
+          2
+        ),
 
-  if (
-    $('[data-export]')
-  ) {
-    $('[data-export]').onclick =
-      () =>
-        download(
-          JSON.stringify(
-            state,
-            null,
-            2
-          ),
-
-          `excedere-flow-${date()}.json`
-        );
+        `excedere-flow-${date()}.json`
+      );
   }
 
-
-  if (
-    $('[data-import]')
-  ) {
-    $('[data-import]').onclick =
-      () =>
-        $('#import-file').click();
+  if($('[data-import]')){
+    $('[data-import]').onclick=
+      ()=>$('#import-file').click();
   }
 
-
-  if (
-    $('#import-file')
-  ) {
-    $('#import-file').onchange =
-      e =>
-        restore(
-          e.target.files[0]
-        );
+  if($('#import-file')){
+    $('#import-file').onchange=
+      e=>restore(
+        e.target.files[0]
+      );
   }
 
-
-  if (
-    $('[data-refresh-projects]')
-  ) {
-    $('[data-refresh-projects]').onclick =
-      () =>
-        refreshProjectsFeed({
-          silent: false
-        });
+  if($('[data-refresh-projects]')){
+    $('[data-refresh-projects]').onclick=
+      ()=>refreshProjectsFeed({
+        silent:false
+      });
   }
 }
 
-
 window.addEventListener(
   'storage',
-  e => {
-    if (
+  e=>{
+    if(
       !accountsEnabled &&
-      e.key ===
-      STORAGE_KEY
-    ) {
-      try {
-        if (
-          e.newValue ===
-          null
-        ) {
+      e.key===STORAGE_KEY
+    ){
+      try{
+        if(e.newValue===null){
           throw Error(
             'Saved data was removed in another tab. Reload before editing.'
           );
         }
 
-        state =
+        state=
           upgradeGuides(
             validate(
               JSON.parse(
@@ -3832,7 +3287,7 @@ window.addEventListener(
           'Updated from another tab'
         );
 
-      } catch (err) {
+      }catch(err){
         revision++;
 
         toast(
@@ -3843,66 +3298,60 @@ window.addEventListener(
   }
 );
 
-
-async function accountReady(
-  r,
-  s
-) {
-  repo = r;
-  state = s;
+async function accountReady(r,s){
+  repo=r;
+  state=s;
 
   revision++;
 
   render();
 
   await refreshProjectsFeed({
-    silent: true
+    silent:true
   });
 }
 
-
-async function boot() {
-  if (
-    accountsEnabled
-  ) {
+async function boot(){
+  if(accountsEnabled){
     await startAccount(
       accountReady,
 
-      () => {
-        state = null;
-        repo = null;
+      ()=>{
+        state=null;
+        repo=null;
 
-        projectsFeed = {
-          tasks: [],
-          version: 0,
-          updatedAt: null
+        projectsFeed={
+          tasks:[],
+          version:0,
+          updatedAt:null
         };
+
+        projectsSaving.clear();
 
         rows.clear();
 
         revision++;
 
         $('#editor').close();
-        $('#editor').innerHTML = '';
-        $('#app').innerHTML = '';
+        $('#editor').innerHTML='';
+        $('#app').innerHTML='';
       }
     );
 
     return;
   }
 
-
-  try {
-    repo =
+  try{
+    repo=
       new LocalRepository();
 
-    state =
+    state=
       repo.load();
 
     render();
 
-  } catch (e) {
-    $('#app').innerHTML =
+  }catch(e){
+    $('#app').innerHTML=
       `
         <main class="recovery">
 
@@ -3957,116 +3406,95 @@ async function boot() {
         </main>
       `;
 
-
-    $('#recover-export').onclick =
-      () => {
-        try {
+    $('#recover-export').onclick=
+      ()=>{
+        try{
           download(
             repo.raw(),
             'flow-recovery.json'
           );
 
-        } catch {
+        }catch{
           toast(
             'Browser storage is not accessible.'
           );
         }
       };
 
+    $('#recovery-file').onchange=
+      e=>restore(
+        e.target.files[0]
+      );
 
-    $('#recovery-file').onchange =
-      e =>
-        restore(
-          e.target.files[0]
-        );
-
-
-    $('#retry').onclick =
+    $('#retry').onclick=
       boot;
   }
 }
 
-
-function updateClock() {
-  if (
+function updateClock(){
+  if(
     !state ||
     !$('#clock-time')
-  ) {
-    return;
-  }
+  )return;
 
-  const now =
+  const now=
     new Date();
 
-  const tz =
+  const tz=
     state.workspace.timeZone;
 
-
-  $('#clock-date').textContent =
+  $('#clock-date').textContent=
     new Intl.DateTimeFormat(
       'en-GB',
       {
-        timeZone: tz,
-        weekday: 'short',
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric'
+        timeZone:tz,
+        weekday:'short',
+        day:'numeric',
+        month:'short',
+        year:'numeric'
       }
-    ).format(
-      now
-    );
+    ).format(now);
 
-
-  $('#clock-time').textContent =
+  $('#clock-time').textContent=
     new Intl.DateTimeFormat(
       'en-GB',
       {
-        timeZone: tz,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
+        timeZone:tz,
+        hour:'2-digit',
+        minute:'2-digit',
+        second:'2-digit',
+        hour12:false
       }
-    ).format(
-      now
-    );
+    ).format(now);
 
+  $('#clock-zone').textContent=
+    tz.replaceAll('_',' ');
 
-  $('#clock-zone').textContent =
-    tz.replaceAll(
-      '_',
-      ' '
-    );
-
-
-  $('#clock-time').dateTime =
+  $('#clock-time').dateTime=
     now.toISOString();
 }
-
 
 setInterval(
   updateClock,
   1000
 );
 
-
 boot();
 
-
 setInterval(
-  () => {
-    if (
+  ()=>{
+    if(
       state &&
       !$('#editor').open
-    ) {
-      const current =
+    ){
+      const current=
         date();
 
-      if (
-        current !==
+      if(
+        current!==
         window.lastFlowDay
-      ) {
-        window.lastFlowDay =
+      ){
+        window.lastFlowDay=
           current;
 
         render();
@@ -4076,33 +3504,30 @@ setInterval(
   60000
 );
 
-
 document.addEventListener(
   'visibilitychange',
-  () => {
-    if (
+  ()=>{
+    if(
       !document.hidden &&
       state &&
       accountsEnabled
-    ) {
+    ){
       refreshProjectsFeed({
-        silent: true
+        silent:true
       });
     }
   }
 );
 
-
 setInterval(
-  () => {
-    if (
+  ()=>{
+    if(
       state &&
       accountsEnabled &&
-      document.visibilityState ===
-      'visible'
-    ) {
+      document.visibilityState==='visible'
+    ){
       refreshProjectsFeed({
-        silent: true
+        silent:true
       });
     }
   },
