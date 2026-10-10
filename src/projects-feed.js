@@ -25,10 +25,9 @@ const EMPTY_FEED = () => ({
 
 
 function validDate(value) {
-  return (
-    typeof value === 'string' &&
-    /^\d{4}-\d{2}-\d{2}$/.test(value)
-  );
+  if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;
+  const parsed=new Date(value+'T12:00:00Z');
+  return !Number.isNaN(parsed.getTime())&&parsed.toISOString().slice(0,10)===value;
 }
 
 
@@ -93,6 +92,11 @@ function normaliseTask(record) {
         record.priority
       ] ||
       'Medium',
+
+    sourcePriority:
+      Object.hasOwn(PRIORITY_MAP,record.priority)
+        ? record.priority
+        : 'Normal',
 
     status:
       completed
@@ -503,6 +507,10 @@ async function saveTaskStatusOnce(
     throw error;
   }
 
+
+  if (!Number.isInteger(Number(data)) || Number(data)<=Number(current.version)) {
+    throw new Error('The server did not confirm the Projects save. Refresh before trying again.');
+  }
 
   return {
     version:

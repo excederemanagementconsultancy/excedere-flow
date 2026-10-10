@@ -3,6 +3,7 @@ import {accountsEnabled,startAccount,logout} from './accounts.js';
 import {LocalRepository,STORAGE_KEY} from './storage.js';
 import {upgradeGuides,safeLink} from './task-guides.js';
 import {loadProjectsFeed,setProjectsTaskCompleted} from './projects-feed.js';
+import {scheduleTasks,projectsTaskLink} from './projects-schedule.js';
 
 const $=s=>document.querySelector(s);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -61,12 +62,14 @@ async function mutate(fn,message='Saved'){
 }
 
 async function refreshProjectsFeed({silent=false}={}){
-  if(!accountsEnabled||!state||projectsFeedLoading)return;
+  if(!accountsEnabled||!state||projectsFeedLoading||projectsSaving.size)return;
 
   projectsFeedLoading=true;
+  const feedRepo=repo;
 
   try{
     const next=await loadProjectsFeed();
+    if(repo!==feedRepo||!state||projectsSaving.size||next.version<projectsFeed.version)return;
 
     const changed=
       next.version!==projectsFeed.version ||
@@ -105,14 +108,16 @@ async function toggleProjectsTask(taskId){
     task.status!=='Completed';
 
   projectsSaving.add(taskId);
+  const taskRepo=repo;
   render();
 
   try{
-    projectsFeed=
-      await setProjectsTaskCompleted(
+    const nextFeed=await setProjectsTaskCompleted(
         taskId,
         complete
       );
+    if(repo!==taskRepo||!state)return;
+    projectsFeed=nextFeed;
 
     render();
 
@@ -123,6 +128,7 @@ async function toggleProjectsTask(taskId){
     );
 
   }catch(e){
+    if(repo!==taskRepo||!state)return;
     toast(
       'Could not update Projects. '+
       e.message
@@ -131,7 +137,10 @@ async function toggleProjectsTask(taskId){
     render();
 
   }finally{
-    projectsSaving.delete(taskId);
+    if(repo===taskRepo&&state){
+      projectsSaving.delete(taskId);
+      render();
+    }
   }
 }
 
@@ -245,17 +254,14 @@ function projectsTaskRow(t){
       </button>
 
       <div class="task-detail">
-        <strong>${esc(t.title)}</strong>
+        <a href="${esc(projectsTaskLink(t.id))}" target="_blank" rel="noopener noreferrer" aria-label="Open ${esc(t.title)} in Excedere Projects"><strong>${esc(t.title)}</strong></a>
 
         <span>
           ${esc(t.project)}
           <b>·</b>
           Excedere Projects
-          ${
-            t.priority==='High'
-              ? '<b>·</b> High priority'
-              : ''
-          }
+          <b>·</b> ${esc(t.sourcePriority||t.priority)} priority
+          <b>·</b> ${esc(pretty(t.date))}
         </span>
       </div>
 
@@ -902,7 +908,9 @@ function toolbar(kind){
         aria-label="Filter by area"
       >
         ${options(
-          state.areas,
+          kind==='tasks'
+            ? [...new Set([...state.areas,...projectsFeed.tasks.map(t=>t.area)])]
+            : state.areas,
           area,
           'All areas'
         )}
@@ -1002,42 +1010,10 @@ function schedule(){
       6
     );
 
-  const list=
-    filtered(
-      occurrences(
-        state,
-        start,
-        end
-      )
-    );
-
-  const late=
-    filtered(
-      occurrences(
-        state,
-        '',
-        addDays(
-          date(),
-          -1
-        )
-      )
-    ).filter(
-      t=>
-        t.status!=='Completed'
-    );
-
-  const unscheduled=
-    filtered(
-      state.tasks
-        .filter(t=>!t.date)
-        .map(
-          t=>({
-            ...t,
-            key:t.id,
-            originalDate:''
-          })
-        )
-    );
+  const groups=scheduleTasks(state,projectsFeed,start,end,date());
+  const list=filtered(groups.week);
+  const late=filtered(groups.overdue);
+  const unscheduled=filtered(groups.unscheduled);
 
   return (
     heading(
@@ -1116,7 +1092,7 @@ function schedule(){
 
               dayTasks.length
                 ? dayTasks
-                    .map(taskRow)
+                    .map(displayTaskRow)
                     .join('')
                 : '<p class="free-day">A little breathing room.</p>',
 
@@ -1136,7 +1112,7 @@ function schedule(){
           ? panel(
               'Unscheduled',
               unscheduled
-                .map(taskRow)
+                .map(displayTaskRow)
                 .join('')
             )
           : ''
@@ -1155,7 +1131,7 @@ function schedule(){
                         ${pretty(t.date)}
                       </div>
 
-                      ${taskRow(t)}
+                      ${displayTaskRow(t)}
                     `
                 )
                 .join('')
@@ -3531,5 +3507,9 @@ setInterval(
       });
     }
   },
-  300000
+  60000
 );
+
+window.addEventListener('focus',()=>{
+  if(state&&accountsEnabled)refreshProjectsFeed({silent:true});
+});
