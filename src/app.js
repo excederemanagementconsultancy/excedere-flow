@@ -410,7 +410,7 @@ function dashboard(){
     sortTasks([
       ...flowDue,
       ...projectDue
-    ]);
+    ].filter(t=>t.status!=='Completed'));
 
   const overdue=
     sortTasks([
@@ -2019,44 +2019,68 @@ function openTask(row){
     '</div>'
   );
 
+  const dialog=$('#editor');
+  const notesInput=$('#working-notes');
+  let savedRevision=revision;
+  let pending=false;
+  let savedSteps=structuredClone(steps);
+  const error=document.createElement('p');
+  error.className='form-error';
+  error.setAttribute('role','alert');
+  dialog.querySelector('.dialog-actions').before(error);
+
   const save=
     async(patch,message,focus)=>{
-      if(editorRevision!==revision){
-        toast(
-          'Data changed. Close and reopen this task before saving.'
-        );
-
+      if(pending)return false;
+      if(savedRevision!==revision){
+        error.textContent='Data changed. Close and reopen this task before saving.';
+        toast(error.textContent);
         return false;
       }
 
-      patch.notes=
-        $('#working-notes').value;
-
-      if(
-        await mutate(
-          s=>
-            updateOccurrence(
-              s,
-              r,
-              patch
-            ),
+      pending=true;
+      error.textContent='';
+      const controls=[...dialog.querySelectorAll('input,textarea,button')]
+        .filter(control=>!control.hasAttribute('data-close'));
+      const disabled=controls.map(control=>control.disabled);
+      controls.forEach(control=>{control.disabled=true;});
+      dialog.setAttribute('aria-busy','true');
+      const requestedPatch={...patch,notes:notesInput.value};
+      try{
+        const saved=await mutate(
+          s=>updateOccurrence(s,currentTask(r),requestedPatch),
           message
-        )
-      ){
-        openTask(
-          currentTask(r)
         );
-
-        if(focus){
-          $('#editor')
-            .querySelector(focus)
-            ?.focus();
+        const stillOpen=dialog.open && $('#working-notes')===notesInput;
+        if(!saved){
+          if(stillOpen)error.textContent=$('#toast').textContent;
+          return false;
         }
-
+        savedRevision=revision;
+        if(!stillOpen)return true;
+        if(requestedPatch.status){
+          dialog.close();
+          return true;
+        }
+        if(requestedPatch.checklist){
+          savedSteps=structuredClone(requestedPatch.checklist);
+          const completed=savedSteps.filter(step=>step.done).length;
+          dialog.querySelector('.walkthrough-progress > span').textContent=
+            completed+' of '+savedSteps.length+' steps complete';
+          const percent=savedSteps.length?Math.round(completed/savedSteps.length*100):0;
+          const progress=dialog.querySelector('[role="progressbar"]');
+          progress.setAttribute('aria-valuenow',String(percent));
+          progress.querySelector('i').style.width=percent+'%';
+        }
         return true;
+      }finally{
+        pending=false;
+        controls.forEach((control,index)=>{control.disabled=disabled[index];});
+        if($('#working-notes')===notesInput){
+          dialog.removeAttribute('aria-busy');
+          if(dialog.open&&focus)dialog.querySelector(focus)?.focus();
+        }
       }
-
-      return false;
     };
 
   $('#editor')
@@ -2068,7 +2092,7 @@ function openTask(row){
         input.onchange=
           async()=>{
             const checklist=
-              steps.map(
+              savedSteps.map(
                 s=>({
                   ...s,
                   done:
@@ -2088,7 +2112,7 @@ function openTask(row){
               )
             ){
               input.checked=
-                !input.checked;
+                savedSteps.find(step=>step.id===input.dataset.step)?.done||false;
             }
           }
     );
