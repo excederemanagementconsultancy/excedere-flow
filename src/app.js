@@ -4,6 +4,7 @@ import {LocalRepository,STORAGE_KEY} from './storage.js';
 import {upgradeGuides,safeLink} from './task-guides.js';
 import {loadProjectsFeed,setProjectsTaskCompleted} from './projects-feed.js';
 import {scheduleTasks,projectsTaskLink} from './projects-schedule.js';
+import {projectsOverview} from './projects-overview.js';
 
 const $=s=>document.querySelector(s);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1290,7 +1291,7 @@ function projects(){
         }
 
       </div>
-    `
+    `+projectsOverview(projectsFeed)
   );
 }
 
@@ -3535,5 +3536,9 @@ setInterval(
 );
 
 window.addEventListener('focus',()=>{
+  if(state&&accountsEnabled)refreshProjectsFeed({silent:true});
+});
+
+window.addEventListener('online',()=>{
   if(state&&accountsEnabled)refreshProjectsFeed({silent:true});
 });
