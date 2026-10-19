@@ -1670,6 +1670,10 @@ function render(){
 
         </nav>
 
+        <a class="app-switch" href="https://excederemanagementconsultancy.github.io/excedere-projects/" target="_blank" rel="noopener noreferrer" aria-label="Open Excedere Projects (opens in a new tab)" title="Open Excedere Projects (opens in a new tab)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M14 3h7v7m0-7L10 14"/><path d="M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/></svg>
+          <span>Open Excedere Projects</span>
+        </a>
 
         <div class="sidebar-footer">
 
