@@ -1,4 +1,5 @@
 import {accountConfig} from './config.js';
+import {initializeTeamFlow} from './team-flow-onboarding.js';
 import {CloudRepository} from './cloud-storage.js';
 import {LocalRepository} from './storage.js';
 import {seed} from './model.js';
@@ -338,6 +339,9 @@ export async function startAccount(
           }
 
           if (!state) {
+            const own=await initializeTeamFlow(repo,client,session.user.id);
+            if(token!==generation)return;
+            if(own){onReady(repo,own);return;}
             screen(
               'Bring your work with you',
               '<p>This account has no workspace yet. You can copy the work saved in this browser into your account, or start with the original Excedere plan.</p>' +

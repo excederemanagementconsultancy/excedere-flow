@@ -1,3 +1,4 @@
+import {loadSharedProjects,setSharedTaskCompleted} from './shared-projects-feed.js';
 /* Projects remains the source of truth. FLOW changes task status only. */
 import './projects-sync-protocol.js';
 import './projects-cloud-repository.js';
@@ -22,7 +23,7 @@ async function drain(client,userId){
  }})();
  try{return await draining;}finally{draining=null;}
 }
-export async function loadProjectsFeed(){
+async function loadOwnProjectsFeed(){
  const a=await account();if(!a){observed=null;observedOwner=null;return {tasks:[],projects:[],milestones:[],version:0,updatedAt:null};}
  let syncError='';try{await drain(a.client,a.userId);}catch(e){syncError='Pending changes are retained. '+e.message;}
  const repository=new window.ProjectsCloudRepository(a.client,a.userId);const payload=await repository.load();const data=payload?{payload,version:repository.version,updated_at:repository.updatedAt}:null;
@@ -33,7 +34,7 @@ export async function loadProjectsFeed(){
  const pending=queue(a.userId);
  return {tasks:[...tasks.values()],projects:(observed.projects||[]).filter(r=>!r.deletedAt),milestones:(observed.records.milestones||[]).filter(r=>!r.deletedAt),version:Number(data.version)||0,updatedAt:data.updated_at||null,pendingCount:pending.length,conflictCount:pending.filter(op=>op.conflicts?.length).length,syncError};
 }
-export async function setProjectsTaskCompleted(taskId,completed){
+async function setOwnProjectsTaskCompleted(taskId,completed){
  const a=await account();if(!a)throw Error('You are not signed in.');
  if(!observed||observedOwner!==a.userId)await loadProjectsFeed();
  const changes=[];const now=new Date().toISOString();
@@ -45,4 +46,17 @@ export async function setProjectsTaskCompleted(taskId,completed){
  const op=globalThis.ProjectsSyncProtocol.operation(a.userId,changes,queue(a.userId));localStorage.setItem(PREFIX+a.userId+':'+op.id,JSON.stringify(op));
  try{await drain(a.client,a.userId);}catch(e){throw Error('Your status change is protected and will retry when connected. '+e.message);}
  const feed=await loadProjectsFeed();const acknowledgement=JSON.parse(localStorage.getItem(HISTORY+a.userId+':'+op.id)||'null');if(acknowledgement?.result?.conflicts?.length)throw Error('A concurrent change needs review in Projects. Both versions are retained.');return feed;
+}
+
+let revision=0,lastFingerprint='';
+export async function loadProjectsFeed(){
+ const own=await loadOwnProjectsFeed(),shared=await loadSharedProjects();
+ const next={...own,tasks:[...own.tasks,...shared.tasks],projects:[...own.projects,...shared.projects],milestones:[...own.milestones,...shared.milestones],syncError:[own.syncError,shared.syncError].filter(Boolean).join(' ')};
+ const fingerprint=JSON.stringify({tasks:next.tasks,projects:next.projects,milestones:next.milestones,syncError:next.syncError});
+ if(fingerprint!==lastFingerprint){revision++;lastFingerprint=fingerprint;}
+ return {...next,version:revision};
+}
+export async function setProjectsTaskCompleted(taskId,completed){
+ if(String(taskId).startsWith('shared:')){await setSharedTaskCompleted(taskId,completed);return loadProjectsFeed();}
+ return setOwnProjectsTaskCompleted(taskId,completed);
 }

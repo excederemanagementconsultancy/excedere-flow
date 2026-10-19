@@ -25,5 +25,7 @@ export function scheduleTasks(state, feed, start, end, today) {
 }
 
 export function projectsTaskLink(id) {
+  const value=String(id);
+  if(value.startsWith('shared:')){const [,owner,project]=value.split(':');return `https://excederemanagementconsultancy.github.io/excedere-projects/#shared=${encodeURIComponent(owner+':'+decodeURIComponent(project))}`;}
   return `https://excederemanagementconsultancy.github.io/excedere-projects/#task=${encodeURIComponent(id)}`;
 }
