@@ -1,9 +1,10 @@
+import {findProjectsTask} from './projects-recurrence.js?v=recurrence-v1';
 import {today,addDays,weekStart,occurrences,progress,projectProgress,updateOccurrence,removeTask,uid,validate,TASK_STATUSES,IDEA_STATUSES,PROJECT_STATUSES,PRIORITIES} from './model.js';
 import {accountsEnabled,startAccount,logout} from './accounts.js';
 import {LocalRepository,STORAGE_KEY} from './storage.js';
 import {upgradeGuides,safeLink} from './task-guides.js';
-import {loadProjectsFeed,setProjectsTaskCompleted} from './projects-feed.js';
-import {scheduleTasks,projectsTaskLink} from './projects-schedule.js';
+import {loadProjectsFeed,setProjectsTaskCompleted} from './projects-feed.js?v=recurrence-v1';
+import {scheduleTasks,projectsTaskLink} from './projects-schedule.js?v=recurrence-v1';
 import {projectsOverview} from './projects-overview.js';
 
 const $=s=>document.querySelector(s);
@@ -101,7 +102,7 @@ async function refreshProjectsFeed({silent=false}={}){
 }
 
 async function toggleProjectsTask(taskId){
-  const task=projectsFeed.tasks.find(t=>t.id===taskId);
+  const task=findProjectsTask(projectsFeed,taskId);
 
   if(!task||projectsSaving.has(taskId))return;
 
@@ -262,7 +263,7 @@ function projectsTaskRow(t){
           <b>·</b>
           Excedere Projects
           <b>·</b> ${esc(t.sourcePriority||t.priority)} priority
-          <b>·</b> ${esc(pretty(t.date))}
+          <b>·</b> ${esc(pretty(t.date))}${t.time?' · '+esc(t.time)+' '+esc(t.scheduleTimeZone||''):''}${t.occurrenceDate?' · Repeating':''}
         </span>
       </div>
 
