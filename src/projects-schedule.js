@@ -1,9 +1,8 @@
-import {projectsTasksForRange} from './projects-recurrence.js?v=recurrence-v1';
 import {addDays, occurrences, PRIORITIES} from './model.js';
 
 // Read Projects records directly. Never copy them into the FLOW workspace.
 export function scheduleTasks(state, feed, start, end, today) {
-  const projects = [...new Map(projectsTasksForRange(feed,'',end > today ? end : today).map(task => [task.id, task])).values()];
+  const projects = [...new Map((feed.tasks || []).map(task => [task.id, task])).values()];
   const sort = list => list.sort((a, b) =>
     (a.date || '9999').localeCompare(b.date || '9999') ||
     (a.time || '99').localeCompare(b.time || '99') ||

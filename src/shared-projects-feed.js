@@ -1,6 +1,5 @@
-import {expandSources,findSource} from './projects-recurrence.js?v=recurrence-v1';
 import './project-access-client.js';
-let api=null,client=null,actor=null,observed=new Map(),sources=[];
+let api=null,client=null,actor=null,observed=new Map();
 async function account(){
  const next=window.ExcedereFlowSupabase;if(!next)return null;
  const {data,error}=await next.auth.getSession();if(error)throw error;const id=data.session?.user?.id;
@@ -8,7 +7,7 @@ async function account(){
  return api;
 }
 export async function loadSharedProjects(){
- const access=await account();observed.clear();sources=[];if(!access)return {tasks:[],projects:[],milestones:[],syncError:''};
+ const access=await account();observed.clear();if(!access)return {tasks:[],projects:[],milestones:[],syncError:''};
  const token=actor,tasks=[],projects=[],milestones=[];
  try{
   await access.retry();
@@ -22,19 +21,18 @@ export async function loadSharedProjects(){
    projects.push({...p.project,id:prefix+p.projectId,sourceId:p.projectId,ownerId:p.ownerId,accessScope:scope});
    for(const r of [...p.records.tasks,...p.records.captures]){
     if(r.type!=='Task'||r.deletedAt)continue;
-    sources.push({record:r,collection:p.records.tasks.includes(r)?'tasks':'captures',projection:p,prefix,ownerId:p.ownerId,accessScope:scope});
+    const id=prefix+encodeURIComponent(r.id);observed.set(id,{projection:p,record:r,collection:p.records.tasks.includes(r)?'tasks':'captures'});
+    const date=/^\d{4}-\d{2}-\d{2}$/.test(r.dueDate||'')?r.dueDate:'';
+    tasks.push({key:'projects:'+id,id,sourceId:r.id,sourceSystem:'projects',ownerId:p.ownerId,accessScope:scope,title:r.title,area:r.project,project:r.project,priority:['Urgent','High'].includes(r.priority)?'High':r.priority==='Low'?'Low':'Medium',sourcePriority:r.priority||'Normal',status:r.status==='completed'?'Completed':'Not Started',date,dueDate:date,time:'',recurring:false,notes:r.notes||'',completedAt:r.completedAt||'',createdAt:r.createdAt||'',updatedAt:r.updatedAt||''});
    }
    for(const r of p.records.milestones)if(!r.deletedAt)milestones.push({...r,id:prefix+r.id,sourceId:r.id,ownerId:p.ownerId,accessScope:scope});
   }
   if(token!==await access.identity())throw Error('Account changed.');
-  return {tasks:expandSources(sources),recurrenceSources:sources,projects,milestones,syncError:''};
- }catch(e){observed.clear();sources=[];return {tasks:[],projects:[],milestones:[],syncError:'Shared projects unavailable. '+e.message};}
+  return {tasks,projects,milestones,syncError:''};
+ }catch(e){observed.clear();return {tasks:[],projects:[],milestones:[],syncError:'Shared projects unavailable. '+e.message};}
 }
 export async function setSharedTaskCompleted(id,completed){
- const access=await account(),match=findSource(sources,id);if(!access||!match)throw Error('Reload your authorized Projects tasks.');
- const {projection,record,collection}=match.source;
- const after=match.date
-  ? globalThis.ExcedereRecurrence.updateOccurrence(record,match.date,{status:completed?'completed':'active'},'FLOW',actor)
-  : {...record,status:completed?'completed':'active'};
- await access.commit(projection,[{collection,id:record.id,before:record,after:{...after,projectId:projection.projectId}}]);
+ const access=await account(),entry=observed.get(id);if(!access||!entry)throw Error('Reload your authorized Projects tasks.');
+ const {projection,record,collection}=entry;
+ await access.commit(projection,[{collection,id:record.id,before:record,after:{...record,projectId:projection.projectId,status:completed?'completed':'active'}}]);
 }
